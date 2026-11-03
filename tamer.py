@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.13.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -4046,9 +4046,14 @@ def recolor_tk_widgets(widget, c):
                             highlightbackground=c["chart_border"] if chart else c["bg"])
             elif isinstance(w, (tk.Toplevel, tk.Tk)):
                 w.configure(background=c["bg"])
-            elif isinstance(w, tk.Menu):  # (Windows draws its menu bar natively and ignores this)
+            elif isinstance(w, tk.Menu):
                 w.configure(background=c["field"], foreground=c["fg"], activebackground=c["select_bg"],
                             activeforeground=c["select_fg"])
+            elif isinstance(w, tk.Menubutton):  # the File / Help bar
+                w.configure(background=c["bg"], foreground=c["fg"], activebackground=c["button_hover"],
+                            activeforeground=c["fg"])
+            elif getattr(w, "is_menubar", False):
+                w.configure(background=c["bg"])
             elif isinstance(w, ttk.Combobox):
                 pd = w.tk.call("ttk::combobox::PopdownWindow", w)
                 w.tk.call(f"{pd}.f.l", "configure", "-background", c["field"], "-foreground", c["fg"],
@@ -4265,11 +4270,14 @@ class App:
 
     def _set_window_icon(self):
         try:
-            if os.path.isfile(ICON_PNG):
+            if IS_WINDOWS and os.path.isfile(ICON_ICO):
+                # The .ico has every size Windows asks for. iconphoto here would replace it with Tk's own icon,
+                # and default= alone only reaches dialogs, not this window.
+                self.root.iconbitmap(ICON_ICO)
+                self.root.iconbitmap(default=ICON_ICO)
+            elif os.path.isfile(ICON_PNG):
                 self._icon_img = tk.PhotoImage(file=ICON_PNG)
                 self.root.iconphoto(True, self._icon_img)  # True = also used by every dialog
-            if IS_WINDOWS and os.path.isfile(ICON_ICO):
-                self.root.iconbitmap(default=ICON_ICO)
         except tk.TclError:
             pass
 
@@ -4312,8 +4320,20 @@ class App:
         self.root.after(15000, self._watch_system_theme)
 
     def _menu(self):
-        mb = tk.Menu(self.root)
-        fm = tk.Menu(mb, tearoff=False)
+        # Windows draws a normal menu bar itself, always light. This one is drawn by Tk, so it follows the theme.
+        # Tk doesn't open it with Alt+letter on Windows, so Alt+F and Alt+H are bound here.
+        bar = tk.Frame(self.root)
+        bar.is_menubar = True
+        bar.pack(side="top", fill="x")
+        self.menubar = bar
+        mb = {}
+        for name in ("File", "Help"):
+            btn = tk.Menubutton(bar, text=name, underline=0, relief="flat", borderwidth=0, padx=10, pady=3)
+            btn.pack(side="left")
+            mb[name] = btn
+            for key in (name[0].lower(), name[0]):
+                self.root.bind(f"<Alt-KeyPress-{key}>", lambda e, b=btn: (self.root.tk.call("tk::MbPost", b), "break")[1])
+        fm = tk.Menu(mb["File"], tearoff=False)
         fm.add_command(label="Settings...", command=self._settings_dialog)
         fm.add_command(label="Update all servers...", command=self._update_all_dialog)
         fm.add_command(label="Broadcast to all servers...", command=self._broadcast_all)
@@ -4328,16 +4348,16 @@ class App:
         fm.add_command(label="Open cluster folder", command=self._open_cluster_dir)
         fm.add_separator()
         fm.add_command(label="Exit", command=self._exit)
-        mb.add_cascade(label="File", menu=fm)
-        hm = tk.Menu(mb, tearoff=False)
+        mb["File"]["menu"] = fm
+        hm = tk.Menu(mb["Help"], tearoff=False)
         hm.add_command(label="Server configuration reference (wiki)", command=lambda: webbrowser.open(DOCS_URL))
         hm.add_command(label=f"About {APP_NAME}", command=lambda: messagebox.showinfo(
             APP_NAME, f"{APP_NAME} - {APP_TAGLINE}\nVersion {APP_VERSION}\n\n"
                       "An unofficial server manager for ARK: Survival Ascended.\n"
                       "Not affiliated with or endorsed by Studio Wildcard.\n\n"
                       f"Data folder: {DATA_DIR}"))
-        mb.add_cascade(label="Help", menu=hm)
-        self.root.config(menu=mb)
+        mb["Help"]["menu"] = hm
+        recolor_tk_widgets(bar, self.colors)
 
     def _layout(self):
         pw = ttk.PanedWindow(self.root, orient="horizontal")

@@ -107,7 +107,7 @@ Without the service, automation only happens while Tamer is open. That covers cr
 - Removing the service never stops your game servers.
 
 ## Appearance
-To switch themes, go to **File > Settings > General > Appearance** and choose **Match Windows** (the default), **Light** or **Dark**. The change applies instantly. With Match Windows, Tamer follows Windows' dark/light app setting automatically.
+To switch themes, go to **File > Settings > General > Appearance** and choose **Match Windows** (the default), **Light** or **Dark**. The change applies instantly. With Match Windows, Tamer follows Windows' dark/light app setting automatically. The title bar and the File / Help menu bar follow the theme too. Alt+F and Alt+H open the menus.
 
 ## Second backup copy (another drive or the cloud)
 In **File > Settings > General**, set a **Second backup folder**. If OneDrive, Dropbox or Google Drive is installed, a one-click button fills in its folder.
