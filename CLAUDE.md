@@ -21,7 +21,8 @@ A Windows desktop app for running ARK: Survival Ascended dedicated servers, incl
 - **`diagnose_server`** is the Troubleshoot button, driven by `LOG_PATTERNS`. **`check_connectivity`** covers ports, the firewall, `UPnP`, the public IP and BattleMetrics.
 - **AsaApi:** `asaapi_*`, `list_plugins`, `install_plugin_zip` and `set_plugin_enabled`. Servers start through `Win64\AsaApiLoader.exe`, and Tamer tracks the real server process it launches.
 - **Background service:** `ServiceAgent`/`run_service` run `tamer.py --service` as a Task Scheduler S4U task. The window and the service hand control back and forth through `gui.lock` and a localhost control socket (`service.json`).
-- **`App`** is the tkinter GUI. It holds the server list plus tabs: Server, Command line, Game settings, Mods, Plugins, Players, Automation, Messages, Performance and Log. `FlowFrame` wraps button rows when the window is narrow. `ScrollFrame` makes tabs scrollable. `apply_ttk_theme` handles light and dark mode.
+- **`App`** is the tkinter GUI. It holds the server list plus tabs: Server, Launch (command line), Game (game settings), Mods, Plugins, Players, Schedule (automation), Messages, Stats (performance) and Log. The names are short so all ten fit at the Larger text size on a 1366-wide laptop; `gui_small` checks this. `FlowFrame` wraps button rows when the window is narrow. `ScrollFrame` makes tabs scrollable. `apply_ttk_theme` handles light and dark mode.
+- **Text size:** use `ui_font(family, size, *styles)` for every font, never a plain `("Segoe UI", 9)` tuple. Those named fonts, and Tk's own (TkDefaultFont...), are resized by `set_text_scale()` (File > Settings > General > Text size).
 
 ## How ARK is launched
 `ArkAscendedServer.exe <Map>?SessionName=..?Port=..?QueryPort=..?RCONEnabled=True?RCONPort=..?...?ServerAdminPassword=.. -flags`
@@ -65,5 +66,12 @@ A Windows desktop app for running ARK: Survival Ascended dedicated servers, incl
 - start such programs with `env=clean_child_env()`;
 - the installer clears the variables itself in `installer/clean_env.iss`;
 - `test_installer_env` covers both.
+
+**A locked Tamer.exe** ("DeleteFile failed; code 5"): the installer can't replace a Tamer.exe that's still running. That includes one waiting on an exit question, one closed to the tray, or the background service, which a running window only pauses. So:
+- the update flow calls `stop_service()`, then `_exit(quiet=True)`;
+- the installer's `PrepareToInstall` closes any Tamer.exe running from `{app}`, and only from there;
+- `[Run]` restarts the service task if it exists.
+
+`test_installer_update` installs over a running stand-in. It passes its own `AppIdValue`, `AppTitle` and `TaskName`, so it can never touch a real install or service. Keep those overridable in `tamer.iss`.
 
 Tamer (`tamer_latest`) reads the latest release, compares its tag with `APP_VERSION`, and offers the attached installer. It offers "Download and install" only to the installer's copy, i.e. when `unins000.exe` sits next to `Tamer.exe`. Other copies get the release page. `ASM_TAMER_API` overrides the address for tests.

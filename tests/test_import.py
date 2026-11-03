@@ -63,6 +63,19 @@ assert (q["map"], q["session_name"], q["name"], q["admin_password"], q["port"], 
 assert q["cmd_flags"] == ["-servergamelog"] and not q["extra_args"] and not q["extra_options"], q
 print("escaped quotes: no stray backslashes, names with brackets and spaces kept")
 
+# ---------- Tamer's own launch line: a " in a server name becomes a curly quote ARK can read ----------
+assert am.launch_safe_name('The "Best" Server') == "The “Best” Server"
+assert am.launch_safe_name('Say "hi') == "Say “hi" and am.launch_safe_name("Plain") == "Plain"
+mq = am.Manager(cfg, lambda *a: None)
+for name in ('The "Best" Server', 'A "b" c "d"', 'Odd " one'):
+    srv = am.default_server(9, cfg.servers); srv.update(session_name=name, install_dir=root)
+    line = mq.to_cmdline(mq.build_command(srv))
+    assert '"' not in mq.build_command(srv)[1], "no straight quote inside the map line"
+    back, _f = am.parse_server_cmdline(line)
+    assert back["session_name"] == am.launch_safe_name(name) and back["port"] == srv["port"], (name, back)
+    assert back["admin_password"] == srv["admin_password"], "the rest of the line still reads correctly"
+print("server names with quotes reach ARK as curly quotes, and the line still splits cleanly")
+
 # ---------- round trip: Tamer's own launch line for the import says the same things ----------
 m = am.Manager(cfg, lambda *a: None)
 again, _f, _n = am.import_server(am.AppConfig(os.path.join(tmp, "c2.json")), cmdline=m.to_cmdline(m.build_command(s)))

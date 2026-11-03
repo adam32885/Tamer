@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.20.0"
+APP_VERSION = "1.21.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -960,7 +960,7 @@ class DiscordNotifier:
 
 
 # --------------------------------------------------------------------------------------
-# Command-line launch options (the "Command line" tab)
+# Command-line launch options (the "Launch" tab)
 # --------------------------------------------------------------------------------------
 # (group, [(flag, label, hint)]) - flags are added as-is to the launch command when ticked
 CMD_FLAG_GROUPS = [
@@ -1168,6 +1168,19 @@ IMPORT_FLAG_KEYS = {"-serverplatform": "server_platform", "-culture": "culture",
                     "-mods": "mods", "-passivemods": "passive_mods", "-activeevent": "active_event"}
 IMPORT_FLAG_DROP = {"-port", "-winlivemaxplayers", "-multihome", "-nobattleye", "-clusterid", "-clusterdiroverride"}
 SERVER_EXE_NAMES = ("arkascendedserver.exe", "asaapiloader.exe")
+
+
+def launch_safe_name(name: str) -> str:
+    """A server name as it can go on ARK's launch line: ARK treats every " as the start or end of a quoted part,
+    so straight quotes become curly ones (The "Best" -> The “Best”), which look the same in the server list."""
+    out, opening = [], True
+    for ch in name:
+        if ch == '"':
+            out.append("“" if opening else "”")
+            opening = not opening
+        else:
+            out.append(ch)
+    return "".join(out)
 
 
 def split_cmdline(line: str) -> list:
@@ -1460,6 +1473,7 @@ class AppConfig:
             "discord_name": APP_NAME,
             "discord_events": {k: k != "players" for k, _ in DISCORD_EVENTS},
             "tamer_update_check": True,  # look for a newer Tamer on GitHub once a day
+            "text_size": "large",  # normal / large / larger (TEXT_SIZES)
             "servers_dir": "",  # where new servers go ("" = servers next to Tamer); set by the welcome
             "servers": [],
         }
@@ -1691,7 +1705,7 @@ class Manager:
 
     def build_command(self, s, mask=False) -> list[str]:
         pw = "********" if mask else s["admin_password"]
-        opts = [s["map"], "listen", f"SessionName={s['session_name']}", f"Port={s['port']}",
+        opts = [s["map"], "listen", f"SessionName={launch_safe_name(s['session_name'])}", f"Port={s['port']}",
                 f"RCONPort={s['rcon_port']}", "RCONEnabled=True", f"MaxPlayers={s['max_players']}"]
         if s.get("server_password"):
             opts.append(f"ServerPassword={'********' if mask else s['server_password']}")
@@ -3021,7 +3035,7 @@ LOG_PATTERNS = [
      "server's game port on the Server tab."),
     (r"out of memory|OutOfMemory|Ran out of memory|Failed to allocate", "error", "The server ran out of memory",
      "ASA needs roughly 12-16 GB of RAM per map. Close other programs, run fewer maps at once, or set a "
-     "memory-limit restart on the Automation tab."),
+     "memory-limit restart on the Schedule tab."),
     (r"not enough space on the disk|No space left on device|disk (is )?full", "error", "The disk is full",
      "Free up space on the drive that holds the server and its backups."),
     (r"(Failed to load|Couldn't find|could not find|failed to find).{0,80}(/Game/Maps|_WP\b|map)", "error",
@@ -3035,7 +3049,7 @@ LOG_PATTERNS = [
     (r"Fatal error|Unhandled Exception|EXCEPTION_ACCESS_VIOLATION|Critical error", "error", "The server crashed",
      "Often a broken mod or a damaged update. Try 'Validate files', then remove recently added mods."),
     (r"(save|\.ark).{0,60}(corrupt|failed to load|unable to load)", "error", "The world save may be damaged",
-     "Restore the newest backup from the Automation tab."),
+     "Restore the newest backup from the Schedule tab."),
     (r"battleye.{0,60}(fail|error)", "warning", "BattlEye failed to start",
      "Untick 'Enable BattlEye' on the Server tab unless you need it."),
     (r"LogEOS.{0,40}(Error|Fail)|EOS.{0,40}(login|auth).{0,40}(fail|error)", "warning",
@@ -4148,19 +4162,34 @@ def install_service() -> str:
     return run_elevated_powershell(script)
 
 
-def uninstall_service() -> str:
+def stop_service(timeout=30, on_wait=None) -> bool:
+    """Ask a running background service to finish its jobs and exit; True once its process is gone (or there was
+    none). on_wait(busy list) is called while it waits for jobs such as a backup or an update."""
+    info = service_info()
+    if not info:
+        return True
     req = service_request({"cmd": "shutdown"})
     if req:
         ls, _ = req
         try:
-            deadline = time.time() + 30
+            deadline = time.time() + timeout
             while time.time() < deadline:
                 msg = ls.recv(5)
                 if msg and msg.get("status") == "ready":
                     break
+                if msg and msg.get("busy") and on_wait:
+                    on_wait(msg["busy"])
         except (OSError, ConnectionError, ValueError):
             pass
         ls.close()
+    deadline = time.time() + 15
+    while time.time() < deadline and pid_alive(info.get("pid")):
+        time.sleep(0.25)
+    return not pid_alive(info.get("pid"))
+
+
+def uninstall_service() -> str:
+    if stop_service():
         time.sleep(1)
     return run_elevated_powershell(_unregister_all_tasks_ps())
 
@@ -4483,6 +4512,48 @@ def set_dark_titlebar(win, dark: bool):
         pass
 
 
+TEXT_SIZES = [("normal", "Normal", 1.0), ("large", "Large", 1.12), ("larger", "Larger", 1.25)]
+_TEXT_SCALE = [1.12]   # the current Text size (File > Settings > General); "large" is the default
+_UI_FONTS = {}         # Tamer's named fonts: name -> (family, base size, styles)
+_TK_FONT_BASE = {}     # Tk's own named fonts (TkDefaultFont...) at their original size
+TK_NAMED_FONTS = ("TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont", "TkCaptionFont",
+                  "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont", "TkFixedFont")
+
+
+def text_scale_of(cfg) -> float:
+    return dict((k, f) for k, _l, f in TEXT_SIZES).get(cfg.data.get("text_size", "large"), 1.12)
+
+
+def _scaled(size, scale):
+    return int(round(size * scale)) if size > 0 else -int(round(-size * scale))  # negative = pixels in Tk
+
+
+def ui_font(family: str, size: int, *styles) -> str:
+    """A named font that grows and shrinks with the Text size setting. Use it wherever Tamer would write
+    font=ui_font("Segoe UI", 9, "bold"): font=ui_font("Segoe UI", 9, "bold")."""
+    name = "Tamer_" + "_".join([family.replace(" ", ""), str(size), *styles])
+    if name not in _UI_FONTS:
+        # keep the Font object: when Python frees it, Tk deletes the named font and widgets fall back to plain text
+        _UI_FONTS[name] = (family, size, styles, tkfont.Font(
+            name=name, family=family, size=_scaled(size, _TEXT_SCALE[0]), weight="bold" if "bold" in styles else "normal",
+            slant="italic" if "italic" in styles else "roman", underline="underline" in styles))
+    return name
+
+
+def set_text_scale(scale: float):
+    """Resize every font Tamer uses (its own and Tk's standard ones) - windows already open change straight away."""
+    _TEXT_SCALE[0] = scale
+    for name in TK_NAMED_FONTS:
+        try:
+            f = tkfont.nametofont(name)
+        except tk.TclError:
+            continue
+        base = _TK_FONT_BASE.setdefault(name, int(f.cget("size")))
+        f.configure(size=_scaled(base, scale))
+    for _family, base, _styles, font in _UI_FONTS.values():
+        font.configure(size=_scaled(base, scale))
+
+
 def without_indicator(layout):
     """A copy of a ttk layout with the tree expand arrow taken out."""
     out = []
@@ -4626,13 +4697,13 @@ def apply_ttk_theme(root, mode: str) -> dict:
            foreground=[("disabled", c["muted"])])
     st.configure("Horizontal.TProgressbar", background=c["primary"], troughcolor=c["bg2"], bordercolor=c["border"],
                  lightcolor=c["primary"], darkcolor=c["primary"])
-    st.configure("TLabelframe.Label", foreground=c["accent"], font=("Segoe UI", 9, "bold"))
-    st.configure("Title.TLabel", foreground=c["accent"], font=("Segoe UI", 11, "bold"))
-    st.configure("Header.TLabel", foreground=c["accent"], font=("Segoe UI", 16, "bold"))
-    st.configure("Status.TLabel", font=("Segoe UI", 11, "bold"))
+    st.configure("TLabelframe.Label", foreground=c["accent"], font=ui_font("Segoe UI", 9, "bold"))
+    st.configure("Title.TLabel", foreground=c["accent"], font=ui_font("Segoe UI", 11, "bold"))
+    st.configure("Header.TLabel", foreground=c["accent"], font=ui_font("Segoe UI", 16, "bold"))
+    st.configure("Status.TLabel", font=ui_font("Segoe UI", 11, "bold"))
     st.configure("Hint.TLabel", foreground=c["muted"])
     st.configure("Warn.TLabel", foreground=c["bad"])
-    st.configure("Treeview", rowheight=26)
+    st.configure("Treeview", rowheight=int(round(26 * _TEXT_SCALE[0])))  # taller rows for bigger text
     # Installed mods list: no gap for an expand arrow, so the circles line up with their headings
     st.layout("Mods.Treeview", st.layout("Treeview"))
     st.layout("Mods.Treeview.Item", without_indicator(st.layout("Treeview.Item")))
@@ -4835,7 +4906,7 @@ SCHEDULE_FIELDS = [
     ("Automatic restarts", "mod_restart_wait_minutes", "Longest wait for an empty server (minutes)", "int",
      "After this it restarts anyway, with player warnings. 0 = no limit"),
     ("Automatic restarts", "ram_restart_gb", "Restart if memory use goes above (GB)", "text",
-     "0 = off. Watch the Performance tab to pick a value"),
+     "0 = off. Watch the Stats tab to pick a value"),
     ("Backups", "backup_interval_min", "Auto backup every (minutes)", "int", "0 = off; only while online"),
     ("Backups", "backup_keep", "Backups to keep", "int", "Oldest are deleted; 0 = keep all"),
     ("Notifications", "discord_notify", "Send Discord notifications for this server", "bool",
@@ -4851,6 +4922,7 @@ class App:
         self.root = root
         self.q: queue.Queue = queue.Queue()
         self.cfg = AppConfig()
+        set_text_scale(text_scale_of(self.cfg))  # before anything is drawn, so everything starts at the chosen size
         self.mgr = Manager(self.cfg, lambda kind, sid=None, payload=None: self.q.put((kind, sid, payload)))
         self.sel = None
         self.form_vars: dict[str, tk.Variable] = {}
@@ -5074,6 +5146,10 @@ class App:
             elif step[0] == 2:
                 if not name.get().strip():
                     return "Give the server a name."
+                if "?" in name.get():
+                    return "The server name can't contain a ? character."
+                if any(ch in join_pw.get() for ch in '?"'):
+                    return "The join password can't contain ? or \" characters, because ARK can't read them."
                 if not players.get().strip().isdigit() or not 1 <= int(players.get()) <= 255:
                     return "Max players should be a number from 1 to 255."
             elif step[0] == 3:
@@ -5306,7 +5382,7 @@ class App:
                     ("Flags", " ".join(s.get("cmd_flags", [])) or "none"),
                     ("Extra ?options", s.get("extra_options") or "none"),
                     ("Extra -arguments", s.get("extra_args") or "none"),
-                    ("Game settings", "GameUserSettings.ini and Game.ini stay in the folder - see the Game settings tab")]
+                    ("Game settings", "GameUserSettings.ini and Game.ini stay in the folder - see the Game tab")]
             text = "\n".join(f"{k}: {v}" for k, v in rows)
             if notes:
                 text += "\n\n" + "\n".join(f"⚠ {n}" for n in notes)
@@ -5344,7 +5420,7 @@ class App:
             self._on_select()
             self.mgr.log(s, f"Imported from {s['install_dir']}.")
             threading.Thread(target=self.mgr.adopt_processes, daemon=True).start()  # pick it up if it's running
-            messagebox.showinfo(APP_NAME, f"'{s['name']}' is imported. Check its Server and Game settings tabs.\n\n"
+            messagebox.showinfo(APP_NAME, f"'{s['name']}' is imported. Check its Server and Game tabs.\n\n"
                                           "If it's running, Tamer is watching it now. If another manager was looking "
                                           "after it, switch that off, so the two don't both restart it.")
 
@@ -5482,8 +5558,25 @@ class App:
                                                  "release page?"):
                     webbrowser.open(rel["page"])
                 return
-            title.configure(text="Starting the installer...")
             b_cancel.configure(state="disabled")
+            if service_info():  # its Tamer.exe would keep the file locked; the installer starts it again after
+                title.configure(text="Stopping the background service...")
+                amount.configure(text="It finishes any job it's doing first.")
+
+                def stop():
+                    ok = stop_service(timeout=600, on_wait=lambda busy: self.q.put(("call", None, lambda: (
+                        d.winfo_exists() and amount.configure(text="Waiting for: " + ", ".join(busy))))))
+                    update_log("Background service stopped." if ok else "The background service didn't stop; "
+                                                                         "the installer will close it.")
+                    self.q.put(("call", None, start_installer))
+                threading.Thread(target=stop, daemon=True).start()
+            else:
+                start_installer()
+
+        def start_installer():
+            if not d.winfo_exists():
+                return
+            title.configure(text="Starting the installer...")
             d.update()
             try:
                 subprocess.Popen([target], close_fds=True, env=clean_child_env())  # it opens the new Tamer at the end
@@ -5495,7 +5588,7 @@ class App:
                 return
             update_log("Installer started; closing Tamer so it can be replaced.")
             d.destroy()
-            self._exit()  # the installer replaces Tamer.exe, so get out of its way
+            self._exit(quiet=True)  # the installer replaces Tamer.exe: get out of its way without asking anything
 
         threading.Thread(target=work, daemon=True).start()
         self.themed_window(d)
@@ -5550,28 +5643,28 @@ class App:
         hm.add_command(label="Send a bug report...", command=self._bug_report_dialog)
         mb["Help"]["menu"] = hm
         # top-right corner: a small link to the Ko-fi page
-        kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
+        kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=ui_font("Segoe UI", 9, "bold"))
         kofi.is_link = True
         kofi.pack(side="right")
         kofi.bind("<Button-1>", lambda e: webbrowser.open(KOFI_URL))
-        kofi.bind("<Enter>", lambda e: kofi.configure(font=("Segoe UI", 9, "bold", "underline")))
-        kofi.bind("<Leave>", lambda e: kofi.configure(font=("Segoe UI", 9, "bold")))
+        kofi.bind("<Enter>", lambda e: kofi.configure(font=ui_font("Segoe UI", 9, "bold", "underline")))
+        kofi.bind("<Leave>", lambda e: kofi.configure(font=ui_font("Segoe UI", 9, "bold")))
         self.kofi_link = kofi
         # shown next to it when a newer Tamer is out (see _tamer_update_check)
-        upd = tk.Label(bar, text="", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
+        upd = tk.Label(bar, text="", cursor="hand2", padx=10, font=ui_font("Segoe UI", 9, "bold"))
         upd.is_link = True
         upd.bind("<Button-1>", lambda e: self._tamer_update_dialog())
-        upd.bind("<Enter>", lambda e: upd.configure(font=("Segoe UI", 9, "bold", "underline")))
-        upd.bind("<Leave>", lambda e: upd.configure(font=("Segoe UI", 9, "bold")))
+        upd.bind("<Enter>", lambda e: upd.configure(font=ui_font("Segoe UI", 9, "bold", "underline")))
+        upd.bind("<Leave>", lambda e: upd.configure(font=ui_font("Segoe UI", 9, "bold")))
         self.update_link = upd
         self.tamer_update = None  # tamer_latest() result when it's newer than this copy
         # in the same spot while there's no update to offer: check by hand
-        chk = tk.Label(bar, text="Check for updates", cursor="hand2", padx=10, font=("Segoe UI", 9))
+        chk = tk.Label(bar, text="Check for updates", cursor="hand2", padx=10, font=ui_font("Segoe UI", 9))
         chk.is_quiet_link = True
         chk.pack(side="right", after=kofi)
         chk.bind("<Button-1>", lambda e: self._tamer_update_check(manual=True))
-        chk.bind("<Enter>", lambda e: chk.configure(font=("Segoe UI", 9, "underline")))
-        chk.bind("<Leave>", lambda e: chk.configure(font=("Segoe UI", 9)))
+        chk.bind("<Enter>", lambda e: chk.configure(font=ui_font("Segoe UI", 9, "underline")))
+        chk.bind("<Leave>", lambda e: chk.configure(font=ui_font("Segoe UI", 9)))
         self.check_link = chk
         recolor_tk_widgets(bar, self.colors)
 
@@ -5596,7 +5689,13 @@ class App:
             tabs_w = sum(font.measure(self.nb.tab(t, "text")) + 26 for t in self.nb.tabs()) + 40
             return min(self.server_cols_w + 24, size - tabs_w)
         initial_sash(pw, 0.45, lo=230, hi=list_width)
-        ttk.Label(left, text="Servers", style="Title.TLabel").pack(anchor="w")
+        title = ttk.Frame(left)
+        title.pack(fill="x")
+        ttk.Label(title, text="Servers", style="Title.TLabel").pack(side="left")
+        # order matters: Start all, Update all and auto-start go down the list (drag, these, or Ctrl+Up/Down)
+        for text, delta in (("▼", 1), ("▲", -1)):
+            ttk.Button(title, text=text, width=3, command=lambda d=delta: self._move_server(d)).pack(side="right", padx=(2, 0))
+        ttk.Label(title, text="Order:", style="Hint.TLabel").pack(side="right", padx=(0, 2))
         cols = ("map", "status", "players")
         self.tree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="browse", height=4,
                                  style="Servers.Treeview")
@@ -5612,6 +5711,12 @@ class App:
             self.tree.tag_configure(state, foreground=color)
         self.tree.tag_configure("busy", foreground=self.colors["busy"])
         self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.bind("<Control-Up>", lambda e: (self._move_server(-1), "break")[1])
+        self.tree.bind("<Control-Down>", lambda e: (self._move_server(1), "break")[1])
+        self.tree.bind("<ButtonPress-1>", self._drag_start, add="+")
+        self.tree.bind("<B1-Motion>", self._drag_move, add="+")
+        self.tree.bind("<ButtonRelease-1>", self._drag_end, add="+")
+        self._drag = None
         b2 = ttk.Frame(left)
         b = ttk.Frame(left)
         for i, (text, cmd) in enumerate([("Add", self._add_server), ("Clone", self._clone_server),
@@ -5742,13 +5847,13 @@ class App:
         ttk.Label(bar, text="Changes apply on the next (re)start.", style="Hint.TLabel").pack(side="left")
         lf = ttk.LabelFrame(sf.inner, text="Launch command (passwords hidden)", padding=8)
         lf.pack(fill="x", padx=6, pady=4)
-        self.cmd_preview = tk.Text(lf, height=4, wrap="word", font=("Consolas", 9), relief="flat")
+        self.cmd_preview = tk.Text(lf, height=4, wrap="word", font=ui_font("Consolas", 9), relief="flat")
         self.cmd_preview.pack(fill="x")
 
     def _tab_cmdline(self):
         tab = ttk.Frame(self.nb)
         self.cmd_tab = tab
-        self.nb.add(tab, text="Command line")
+        self.nb.add(tab, text="Launch")
         sf = ScrollFrame(tab)
         sf.pack(fill="both", expand=True)
         body = sf.inner
@@ -5840,7 +5945,7 @@ class App:
 
         prev = ttk.LabelFrame(body, text="Launch command (passwords hidden)", padding=8)
         prev.pack(fill="x", padx=6, pady=6)
-        self.cmd_preview2 = tk.Text(prev, height=4, wrap="word", font=("Consolas", 9), relief="flat")
+        self.cmd_preview2 = tk.Text(prev, height=4, wrap="word", font=ui_font("Consolas", 9), relief="flat")
         self.cmd_preview2.pack(fill="x")
         self._cmd_cols = 0
         sf.canvas.bind("<Configure>", lambda e: self._grid_cmd_sections(3 if e.width >= 1250 else 2 if e.width >= 760 else 1),
@@ -5972,7 +6077,7 @@ class App:
 
     def _tab_config(self):
         tab = ttk.Frame(self.nb)
-        self.nb.add(tab, text="Game settings")
+        self.nb.add(tab, text="Game")
         bar = ttk.Frame(tab)
         bar.pack(fill="x", padx=6, pady=6)
         ttk.Button(bar, text="Save to INI files", command=self._save_ini, style="Accent.TButton").pack(side="left")
@@ -6060,7 +6165,7 @@ class App:
         for fname in (GUS, GINI):
             fr = ttk.Frame(self.ini_nb)
             self.ini_nb.add(fr, text=fname)
-            txt = tk.Text(fr, wrap="none", undo=True, font=("Consolas", 10), height=5, width=40)
+            txt = tk.Text(fr, wrap="none", undo=True, font=ui_font("Consolas", 10), height=5, width=40)
             ys = ttk.Scrollbar(fr, orient="vertical", command=txt.yview)
             xs = ttk.Scrollbar(fr, orient="horizontal", command=txt.xview)
             txt.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
@@ -6133,7 +6238,7 @@ class App:
         right.bind("<Configure>", lambda e: mod_hint.configure(wraplength=max(120, e.width - 8)), add="+")
         df = ttk.LabelFrame(right, text="Details", padding=6)
         df.pack(fill="x")
-        self.mod_details = tk.Text(df, height=5, width=30, wrap="word", font=("Segoe UI", 9), relief="flat", state="disabled")
+        self.mod_details = tk.Text(df, height=5, width=30, wrap="word", font=ui_font("Segoe UI", 9), relief="flat", state="disabled")
         self.mod_details.pack(fill="x")
         inf = ttk.LabelFrame(right, text="Installed on this server (load order)", padding=6)
         inf.pack(fill="both", expand=True, pady=(6, 0))
@@ -6332,7 +6437,8 @@ class App:
         self.mod_centres = (left + word_a / 2, left + text_w - word_p / 2)  # from the column's left edge
         pad = self.root.tk.splitlist(ttk.Style(self.root).lookup("Treeview.Item", "padding"))  # text or a list
         self.mod_row_pad = round(self.root.winfo_fpixels(str(pad[0]))) if pad else 0
-        self.mod_images = mod_mode_images(width - self.mod_row_pad, [c - self.mod_row_pad for c in self.mod_centres])
+        self.mod_images = mod_mode_images(width - self.mod_row_pad, [c - self.mod_row_pad for c in self.mod_centres],
+                                          size=int(round(18 * _TEXT_SCALE[0])))
         self.itree.heading("#0", anchor="center", text="Active" + " " * gap + "Passive")
         self.itree.column("#0", width=width, minwidth=width, stretch=False)
 
@@ -6816,7 +6922,7 @@ class App:
                           ("Chat...", lambda: self._rcon_prompt("ServerChat", "Chat message:")),
                           ("Wipe wild dinos", self._destroy_wild), ("Clear", lambda: self._clear_console())]:
             quick.add(ttk.Button(quick, text=text, command=cmd))
-        self.console = tk.Text(cf, height=3, width=30, wrap="word", font=("Consolas", 10), state="disabled")
+        self.console = tk.Text(cf, height=3, width=30, wrap="word", font=ui_font("Consolas", 10), state="disabled")
         cs = ttk.Scrollbar(cf, orient="vertical", command=self.console.yview)
         self.console.configure(yscrollcommand=cs.set)
         ent = ttk.Frame(cf)
@@ -6824,14 +6930,14 @@ class App:
         cs.pack(side="right", fill="y")
         self.console.pack(fill="both", expand=True)
         self.cmd_var = tk.StringVar()
-        e = ttk.Entry(ent, textvariable=self.cmd_var, font=("Consolas", 10))
+        e = ttk.Entry(ent, textvariable=self.cmd_var, font=ui_font("Consolas", 10))
         e.pack(side="left", fill="x", expand=True)
         e.bind("<Return>", lambda ev: self._rcon_entry())
         ttk.Button(ent, text="Send", command=self._rcon_entry).pack(side="left", padx=(4, 0))
 
     def _tab_schedule(self):
         tab = ttk.Frame(self.nb)
-        self.nb.add(tab, text="Automation")
+        self.nb.add(tab, text="Schedule")
         split = ttk.PanedWindow(tab, orient="vertical")
         split.pack(fill="both", expand=True)
         sf = ScrollFrame(split)
@@ -6873,7 +6979,7 @@ class App:
     def _tab_perf(self):
         tab = ttk.Frame(self.nb)
         self.perf_tab = tab
-        self.nb.add(tab, text="Performance")
+        self.nb.add(tab, text="Stats")
         top = ttk.LabelFrame(tab, text="All servers", padding=6)
         top.pack(fill="x", padx=6, pady=6)
         cols = ("status", "cpu", "ram", "limit", "uptime", "players")
@@ -6968,7 +7074,7 @@ class App:
         c.delete("all")
         w, h = max(c.winfo_width(), 200), max(c.winfo_height(), 120)
         L, R, T, B = 58, 16, 30, 24
-        c.create_text(L, 14, text=title, anchor="w", fill=ink, font=("Segoe UI", 10, "bold"))
+        c.create_text(L, 14, text=title, anchor="w", fill=ink, font=ui_font("Segoe UI", 10, "bold"))
         now = time.time()
         x0 = now - 3600
         sx = lambda t: L + (t - x0) / 3600 * (w - L - R)
@@ -6981,22 +7087,22 @@ class App:
             v = step * i
             y = sy(v)
             c.create_line(L, y, w - R, y, fill=grid)
-            c.create_text(L - 6, y, text=fmt(v).replace(".0 GB", " GB"), anchor="e", fill=muted, font=("Segoe UI", 8))
+            c.create_text(L - 6, y, text=fmt(v).replace(".0 GB", " GB"), anchor="e", fill=muted, font=ui_font("Segoe UI", 8))
         for m in (60, 45, 30, 15, 0):
             x = sx(now - m * 60)
-            c.create_text(x, h - B + 12, text="now" if m == 0 else f"-{m} min", fill=muted, font=("Segoe UI", 8))
+            c.create_text(x, h - B + 12, text="now" if m == 0 else f"-{m} min", fill=muted, font=ui_font("Segoe UI", 8))
         if threshold:
             y = sy(min(threshold, ymax))
             c.create_line(L, y, w - R, y, fill=warn, dash=(4, 3))
-            c.create_text(w - R - 4, y - 8, text=threshold_label, anchor="e", fill=warn, font=("Segoe UI", 8))
+            c.create_text(w - R - 4, y - 8, text=threshold_label, anchor="e", fill=warn, font=ui_font("Segoe UI", 8))
         pts = [(t, v) for t, v in pts if t >= x0]
         self._chart_pts[str(c)] = (pts, sx, sy, fmt)
         if not pts:
             c.create_text((L + w - R) / 2, (T + h - B) / 2, text="No data yet - shown while the server is running",
-                          fill=muted, font=("Segoe UI", 9))
+                          fill=muted, font=ui_font("Segoe UI", 9))
             return
         c.create_text(w - R, 14, text=f"Now {fmt(pts[-1][1])} · peak {fmt(max(v for _, v in pts))}",
-                      anchor="e", fill=ink, font=("Segoe UI", 9))
+                      anchor="e", fill=ink, font=ui_font("Segoe UI", 9))
         seg = []
         for i, (t, v) in enumerate(pts):
             if seg and t - pts[i - 1][0] > 30:  # gap (server was down) -> break the line
@@ -7025,7 +7131,7 @@ class App:
         label = f"{dt.datetime.fromtimestamp(t):%H:%M:%S}  {fmt(v)}"
         tx = x + 10 if x < c.winfo_width() - 150 else x - 10
         txt = c.create_text(tx, max(y - 14, 40), text=label, anchor="w" if tx > x else "e",
-                            fill=k["chart_ink"], font=("Segoe UI", 9), tags="hover")
+                            fill=k["chart_ink"], font=ui_font("Segoe UI", 9), tags="hover")
         bx = c.bbox(txt)
         rect = c.create_rectangle(bx[0] - 5, bx[1] - 3, bx[2] + 5, bx[3] + 3, fill=k["chart_bg"],
                                   outline=k["chart_border"], tags="hover")
@@ -7035,7 +7141,7 @@ class App:
         tab = ttk.Frame(self.nb)
         self.log_tab = tab
         self.nb.add(tab, text="Log")
-        self.logtxt = tk.Text(tab, wrap="word", font=("Consolas", 9), state="disabled", height=5, width=40)
+        self.logtxt = tk.Text(tab, wrap="word", font=ui_font("Consolas", 9), state="disabled", height=5, width=40)
         ls = ttk.Scrollbar(tab, orient="vertical", command=self.logtxt.yview)
         self.logtxt.configure(yscrollcommand=ls.set)
         ls.pack(side="right", fill="y")
@@ -7111,9 +7217,12 @@ class App:
                     raise ValueError(f"{p} must be between 1 and 65535.")
             if new["port"] == new["rcon_port"]:
                 raise ValueError("Game port and RCON port must differ.")
-            for k in ("session_name", "admin_password", "server_password"):
+            if "?" in new["session_name"]:  # it would split ARK's ?option line (a " is fine: it becomes curly)
+                raise ValueError("Server name can't contain a ? character.")
+            for k in ("admin_password", "server_password"):  # passwords must reach ARK exactly as typed
                 if any(ch in new[k] for ch in '?"'):
-                    raise ValueError(f"{k.replace('_', ' ')} can't contain ? or \" characters.")
+                    raise ValueError(f"{k.replace('_', ' ').capitalize()} can't contain ? or \" characters, "
+                                     "because ARK can't read them - please pick another.")
             for k in ("admin_password", "server_password"):
                 if " " in new[k]:
                     raise ValueError(f"{k.replace('_', ' ')} can't contain spaces.")
@@ -7973,6 +8082,47 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _move_server(self, delta, sid=None, to=None):
+        """Move a server up/down the list (delta), or to position `to`. The list order is the order Start all,
+        Update all and auto-start use. Returns True if it moved."""
+        servers = self.cfg.servers
+        s = self.cfg.get(sid) if sid else self.current()
+        if not s or s not in servers:
+            return False
+        i = servers.index(s)
+        j = to if to is not None else i + delta
+        j = max(0, min(len(servers) - 1, j))
+        if j == i:
+            return False
+        servers.insert(j, servers.pop(i))
+        self._refresh_server_list()
+        self.tree.selection_set(s["id"])
+        self.tree.see(s["id"])
+        if to is None:  # a drag saves once when it's let go
+            self.cfg.save()
+        return True
+
+    def _drag_start(self, e):
+        row = self.tree.identify_row(e.y)
+        self._drag = {"id": row, "moved": False} if row and self.tree.identify_region(e.x, e.y) != "heading" else None
+
+    def _drag_move(self, e):
+        if not self._drag:
+            return
+        target = self.tree.identify_row(e.y)
+        if target and target != self._drag["id"]:
+            ids = [x["id"] for x in self.cfg.servers]
+            if self._move_server(0, sid=self._drag["id"], to=ids.index(target)):
+                self._drag["moved"] = True
+
+    def _drag_end(self, _e):
+        if self._drag and self._drag["moved"]:
+            self.cfg.save()
+            moved = self.cfg.get(self._drag["id"])
+            if moved:
+                self.mgr.log(moved, f"Moved to position {self.cfg.servers.index(moved) + 1} in the server list.")
+        self._drag = None
+
     def _remove_server(self):
         s = self.current()
         if not s:
@@ -8020,19 +8170,19 @@ class App:
         ttk.Label(fr, text=intro, style="Hint.TLabel", wraplength=720, justify="left").pack(anchor="w", pady=(0, 6))
         bar = ttk.Frame(fr)
         bar.pack(side="bottom", fill="x", pady=(8, 0))
-        txt = tk.Text(fr, wrap="word", font=("Segoe UI", 10), padx=10, pady=8, relief="flat")
+        txt = tk.Text(fr, wrap="word", font=ui_font("Segoe UI", 10), padx=10, pady=8, relief="flat")
         sb = ttk.Scrollbar(fr, orient="vertical", command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         txt.pack(fill="both", expand=True)
         c = self.colors
-        txt.tag_configure("title", font=("Segoe UI", 10, "bold"))
-        txt.tag_configure("verdict", font=("Segoe UI", 11, "bold"), spacing3=8)
+        txt.tag_configure("title", font=ui_font("Segoe UI", 10, "bold"))
+        txt.tag_configure("verdict", font=ui_font("Segoe UI", 11, "bold"), spacing3=8)
         for tag, color in (("error", c["bad"]), ("fail", c["bad"]), ("warning", c["warn"]), ("warn", c["warn"]),
                            ("ok", c["good"]), ("info", c["busy"]), ("unknown", c["muted"])):
-            txt.tag_configure(tag, foreground=color, font=("Segoe UI", 10, "bold"))
+            txt.tag_configure(tag, foreground=color, font=ui_font("Segoe UI", 10, "bold"))
         txt.tag_configure("detail", lmargin1=24, lmargin2=24, spacing3=2)
-        txt.tag_configure("evidence", lmargin1=24, lmargin2=24, font=("Consolas", 9), foreground=c["muted"])
+        txt.tag_configure("evidence", lmargin1=24, lmargin2=24, font=ui_font("Consolas", 9), foreground=c["muted"])
         txt.tag_configure("gap", spacing3=8)
         txt.insert("end", "Checking...")
         txt.configure(state="disabled")
@@ -8433,6 +8583,12 @@ class App:
         ttk.Combobox(g, textvariable=theme_var, values=[x[1] for x in THEME_CHOICES], state="readonly",
                      width=18).grid(row=r, column=1, sticky="w", pady=3)
         r += 1
+        size_labels = {k: label for k, label, _f in TEXT_SIZES}
+        size_var = tk.StringVar(value=size_labels.get(data.get("text_size", "large"), "Large"))
+        ttk.Label(g, text="Text size").grid(row=r, column=0, sticky="w", pady=3)
+        ttk.Combobox(g, textvariable=size_var, values=[label for _k, label, _f in TEXT_SIZES], state="readonly",
+                     width=18).grid(row=r, column=1, sticky="w", pady=3)
+        r += 1
         hint(g, r, "All servers in a cluster must share the same cluster ID and cluster folder; changes apply on the "
                    "next restart. Mod search works without a CurseForge key through a free community proxy - a "
                    "personal key (free at console.curseforge.com) is faster and more reliable.")
@@ -8447,7 +8603,7 @@ class App:
             ev_vars[key] = tk.BooleanVar(value=data.get("discord_events", {}).get(key, True))
             ttk.Checkbutton(evf, text=label, variable=ev_vars[key]).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 24), pady=1)
         hint(dc, r + 1, "Create a webhook in Discord: Server Settings > Integrations > Webhooks > New Webhook > "
-                        "Copy Webhook URL. Each server can opt out on its Automation tab.")
+                        "Copy Webhook URL. Each server can opt out on its Schedule tab.")
 
         # --- Tray & background service
         bg = page("Tray & background service")
@@ -8567,8 +8723,16 @@ class App:
                         discord_events={k: v.get() for k, v in ev_vars.items()},
                         close_to_tray=close_tray.get(), minimize_to_tray=min_tray.get(),
                         theme=next((k for k, v in THEME_CHOICES if v == theme_var.get()), "system"))
+            new_size = next((k for k, label, _f in TEXT_SIZES if label == size_var.get()), "large")
+            size_changed = new_size != data.get("text_size", "large")
+            data["text_size"] = new_size
             self.cfg.save()
-            self.apply_theme()
+            if size_changed:
+                set_text_scale(text_scale_of(self.cfg))
+            self.apply_theme()  # also redoes row heights and the Mods tab circles for the new size
+            if size_changed:
+                messagebox.showinfo(APP_NAME, "Text size changed. A few column widths settle fully the next time "
+                                              "you open Tamer.", parent=d)
             if IS_WINDOWS:
                 try:
                     set_start_with_windows(sw.get())
@@ -8658,7 +8822,7 @@ class App:
         ttk.Combobox(f, textvariable=kind, values=[x[1] for x in TASK_KINDS], state="readonly", width=34).grid(
             row=0, column=1, sticky="w", pady=3)
         ttk.Label(f, text="Text").grid(row=1, column=0, sticky="nw", pady=3)
-        txt = tk.Text(f, height=4, width=60, wrap="word", font=("Segoe UI", 10))
+        txt = tk.Text(f, height=4, width=60, wrap="word", font=ui_font("Segoe UI", 10))
         txt.grid(row=1, column=1, sticky="ew", pady=3)
         txt.insert("1.0", t.get("text", ""))
         ttk.Label(f, text=f"Placeholders: {TASK_PLACEHOLDERS}\nFor admin commands, put one command per line "
@@ -8820,17 +8984,19 @@ class App:
             return
         self._exit()
 
-    def _exit(self):
+    def _exit(self, quiet=False):
+        """Close Tamer. quiet=True (for an update) asks nothing: the installer is waiting to replace Tamer.exe,
+        and a question left open - or closing to the tray - would keep the file locked ("Access is denied")."""
         self._show_window()
-        if not self._save_form(silent=True):
+        if not self._save_form(silent=True) and not quiet:
             return
         busy = [f"{s['name']}: {self.mgr.runtime(s['id']).busy}" for s in self.cfg.servers if self.mgr.runtime(s["id"]).busy]
-        if busy and not messagebox.askyesno(APP_NAME, "These operations are still running and will be interrupted "
-                                                      "if you exit now:\n  " + "\n  ".join(busy) + "\n\nExit anyway?"):
+        if busy and not quiet and not messagebox.askyesno(APP_NAME, "These operations are still running and will be interrupted "
+                                                                    "if you exit now:\n  " + "\n  ".join(busy) + "\n\nExit anyway?"):
             return
         running = [s["name"] for s in self.cfg.servers if self.mgr.is_running(s)]
         has_service = service_info() is not None
-        if running and not has_service and not messagebox.askyesno(
+        if running and not has_service and not quiet and not messagebox.askyesno(
                 APP_NAME, "These servers will keep running after you exit:\n  " + "\n  ".join(running) +
                           "\n\nCrash auto-restart, schedules, backups, timed messages and Discord alerts only work "
                           "while the manager is open - or install the background service (File > Settings > "
@@ -8884,7 +9050,7 @@ def take_over_from_service(root) -> bool | None:
                 fr = ttk.Frame(win, padding=14)
                 fr.pack(fill="both")
                 ttk.Label(fr, text="The background service is finishing a job before handing over:",
-                          font=("Segoe UI", 10, "bold")).pack(anchor="w")
+                          font=ui_font("Segoe UI", 10, "bold")).pack(anchor="w")
                 lbl = ttk.Label(fr, text="", justify="left")
                 lbl.pack(anchor="w", pady=8)
                 bb = ttk.Frame(fr)

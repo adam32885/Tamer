@@ -46,13 +46,23 @@ am.messagebox.askyesno = lambda t, m, **k: asked.append(m) or answer[0]
 am.messagebox.showinfo = lambda t, m, **k: infos.append(m)
 am.webbrowser.open = opened.append
 real_popen = am.subprocess.Popen
-am.subprocess.Popen = lambda cmd, *a, **k: started.append(cmd) if "Tamer-Setup" in str(cmd) else \
-    real_popen(cmd, *a, **k)  # never run an installer in tests; Tamer's other commands still run
+steps = []  # what happens, in order, when Download and install runs
+am.subprocess.Popen = lambda cmd, *a, **k: (started.append(cmd), steps.append("installer"))[0] if "Tamer-Setup" in str(cmd) \
+    else real_popen(cmd, *a, **k)  # never run an installer in tests; Tamer's other commands still run
+service = {"running": False}  # a pretend background service
+am.service_info = lambda: {"pid": 1, "port": 1} if service["running"] else None
+
+
+def fake_stop(timeout=30, on_wait=None):
+    on_wait and on_wait(["Island: Backing up"])
+    steps.append("service stopped"); service["running"] = False
+    return True
+am.stop_service = fake_stop
 answer = [True]
 root = tk.Tk(); app = am.App(root); errors = []
 root.report_callback_exception = lambda *a: (errors.append(a), __import__("traceback").print_exception(*a), root.destroy())
 exited = []
-app._exit = lambda: exited.append(True)
+app._exit = lambda quiet=False: (exited.append(quiet), steps.append("exit"))
 
 
 def after(cond, then, tries=60):
@@ -90,6 +100,7 @@ def c():
     assert "**" not in asked[-1], "no Markdown markers in the update window"
     assert opened == [NEWER["html_url"]] and not started, (opened, started)
     am.tamer_installed_copy = lambda: True             # now pretend this is the installed copy
+    service["running"] = True                          # ...with the background service running
     app._tamer_update_dialog()
     assert "Download and install it now?" in asked[-1], asked[-1]
     after(lambda: started, d)
@@ -98,7 +109,9 @@ def c():
 def d():
     path = started[0][0]
     assert os.path.basename(path) == "Tamer-Setup-99.0.0.exe" and open(path, "rb").read() == b"pretend installer"
-    assert exited, "Tamer closes so the installer can replace it"
+    assert exited == [True], "Tamer closes without asking anything, so the installer can replace it"
+    assert steps == ["service stopped", "installer", "exit"], steps
+    assert "Background service stopped." in open(os.path.join(am.DATA_DIR, "logs", "update.log"), encoding="utf-8").read()
     log = open(os.path.join(am.DATA_DIR, "logs", "update.log"), encoding="utf-8").read()
     assert "downloading" in log and "Installer started" in log, log
     os.remove(path)
@@ -124,6 +137,7 @@ def cancelled(slow):
     target = os.path.join(tempfile.gettempdir(), slow["name"])
     assert not os.path.exists(target) and not os.path.exists(target + ".part"), "nothing left behind"
     assert len(started) == 1 and len(exited) == 1, "not run, Tamer not closed"
+    assert steps == ["service stopped", "installer", "exit"], "nothing else happened"
     # a download that fails: say why, offer the release page
     asked.clear(); opened.clear()
     app._tamer_update_install(dict(slow, url=base + "/download/missing.exe"))

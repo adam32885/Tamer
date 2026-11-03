@@ -2,6 +2,13 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.21.0
+- **Rearrange your servers:** drag them up or down in the list, or use the **▲ / ▼** arrows next to "Servers" (or Ctrl+Up / Ctrl+Down). The order is saved, and Start all, Update all and auto-start follow it.
+- Fixed: updating could stop with "DeleteFile failed; code 5. Access is denied" because Tamer was still running. It might be waiting on a question, sitting in the tray, or running as the background service. Now Tamer closes without asking anything when it updates, and stops the background service first (letting a running backup or update finish). The installer also closes any Tamer.exe still running from its folder, then starts the background service again if it's installed. This also fixes updates started from older versions.
+- **Bigger text, and a Text size setting:** File > Settings > General > Text size offers Normal (the old size), Large (the new default) and Larger. Everything grows together and changes straight away.
+- Shorter tab names, so all ten fit at the bigger sizes on laptop screens too: **Command line** is now **Launch**, **Game settings** is now **Game**, **Automation** is now **Schedule** and **Performance** is now **Stats**. Everything inside them is the same.
+- Server names can now contain `"` quote marks. ARK can't read straight quotes inside its launch line, so Tamer passes them as curly quotes (The “Best” Server), which look the same in the server list. Passwords still can't contain `"` or `?`, and the welcome now checks that too.
+
 ## 1.20.0
 - **Mod settings:** a new tab under Game settings for the settings mods read from GameUserSettings.ini. It lists each mod's section (such as `[StructuresPlus]`) with a best guess at which installed mod it belongs to, and its settings. You can edit, add and remove settings and sections. Only what you change is rewritten, and it stays in step with Common settings and the raw INI editor.
 - **Check for updates** link in the top-right corner, next to Ko-fi. The green **⬆ Update to x.y.z** link takes its place when there's an update.

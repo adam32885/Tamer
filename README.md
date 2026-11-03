@@ -15,7 +15,7 @@
 - **Clusters** for character and dino transfers between maps, and **copy settings** from one server to others.
 - **Import your existing servers**, whether made by hand, with a .bat file or another manager: Tamer reads their settings, mods and INI files.
 - **Backups** on a timer, with a second copy on another drive or the cloud.
-- **Game settings** form, **mod settings** editor and full INI editors, plus a **command line** builder.
+- **Game settings** form, **mod settings** editor and full INI editors, plus a **launch options** builder.
 - **AsaApi plugins:** install AsaApi and plugins in one click.
 - **Discord alerts**, timed in-game messages, a **troubleshooter** that reads the logs for you, connectivity checks, and performance graphs.
 - **Runs in the background** (tray and Windows service), with light and dark themes, and **updates itself**.
@@ -71,7 +71,7 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 1. Click **Add** (or **Clone**) for each map. Every server gets its own install folder and unique ports automatically.
 2. On each server, tick **Join the cluster**.
 3. The **File > Settings** menu holds the shared **Cluster ID** and **cluster data folder**. All cluster servers must use the same ones, and Tamer handles that for you.
-4. To limit what can be transferred, use **Game settings > Cluster transfers**.
+4. To limit what can be transferred, use **Game > Cluster transfers**.
 
 ## Features
 - **Install / Update / Validate** through SteamCMD. The header shows the installed build, the latest build, and *UPDATE AVAILABLE* when there's a new one.
@@ -80,7 +80,7 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 - **Hide ARK's log window when using AsaApi** (Server tab > Behaviour, on by default): for servers started with AsaApi, the "ASA ... | Process ... | Mem ..." window ARK opens is hidden, so only the AsaApi window shows. Servers without AsaApi always keep ARK's window, so every server has one window. The server log is also on Tamer's Log tab. Untick the box to bring the window back, even while the server is running.
 - **Scheduled restarts**: set daily times like `04:00, 16:00`. Players are warned at the minutes you choose, and the game can optionally update during the restart.
 - **Auto-update on release**: optionally restarts with warnings when Wildcard pushes a new server build.
-- **Game settings**: a form for common rates and rules (XP, taming, harvest, breeding, PvE, MOTD…) plus full raw editors for `GameUserSettings.ini` and `Game.ini`. Leave a form field blank to use ARK's default. Each save keeps a `.bak` copy.
+- **Game settings** (the **Game** tab): a form for common rates and rules (XP, taming, harvest, breeding, PvE, MOTD…) plus full raw editors for `GameUserSettings.ini` and `Game.ini`. Leave a form field blank to use ARK's default. Each save keeps a `.bak` copy.
   - **Mod settings** lists the mods' own sections in `GameUserSettings.ini` (such as `[StructuresPlus]`), with a best guess at which installed mod each one belongs to. Click a section to see its settings. Edit a value and press **Set**, or use **Add setting** / **Remove setting**. **Add section...** is for a mod that has no settings in the file yet; its CurseForge page lists the section name and settings. Only the sections you change are rewritten, and the three views (Common settings, Mod settings and the raw file) always agree.
   - Edit INI files while the server is **stopped**. ARK rewrites GameUserSettings.ini when it shuts down.
 - **RCON console**: send any admin command. It shows a live player list with kick, ban and copy-ID, a live in-game chat feed, broadcast, and wiping wild dinos.
@@ -105,11 +105,11 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
    - game and mod updates
    - players joining and leaving (off by default; it can get chatty)
    - high-memory alerts
-4. Each server has a **Send Discord notifications** switch on its **Automation** tab.
+4. Each server has a **Send Discord notifications** switch on its **Schedule** tab.
 
 ## Mod update auto-restart
 When a server comes online, Tamer records which version of each mod it loaded. Every 30 minutes by default (the interval is in Settings), it asks CurseForge whether any of those mods has a newer file.
-- If **Restart automatically when an installed mod updates** is on (Automation tab), the server restarts with your usual player warnings. The new mod version downloads during startup.
+- If **Restart automatically when an installed mod updates** is on (Schedule tab), the server restarts with your usual player warnings. The new mod version downloads during startup.
 - If it's off, you get a "MOD UPDATE" notice in the header and a Discord alert instead.
 - To avoid interrupting players, also turn on **Wait until the server is empty before a mod update restart**. Tamer then waits until nobody is online and restarts without warnings. If the server is still busy after **Longest wait for an empty server** (2 hours by default, 0 = no limit), it restarts anyway with your usual warnings. The header and Discord show that it's waiting.
 - If Tamer can't get the player list, it keeps waiting rather than guessing the server is empty.
@@ -117,9 +117,9 @@ When a server comes online, Tamer records which version of each mod it loaded. E
 - To check right away, use **File > Check for mod updates now**.
 
 ## Performance monitoring
-The **Performance** tab shows every server's CPU, memory, uptime and player count, plus this PC's total memory use. Below that are one-hour memory and CPU charts for the selected server; hover over a chart to see exact values.
+The **Stats** tab shows every server's CPU, memory, uptime and player count, plus this PC's total memory use. Below that are one-hour memory and CPU charts for the selected server; hover over a chart to see exact values.
 
-**Restart if memory use goes above (GB)** is on the Automation tab. When a server stays above that limit for about 30 seconds, it restarts with player warnings.
+**Restart if memory use goes above (GB)** is on the Schedule tab. When a server stays above that limit for about 30 seconds, it restarts with player warnings.
 - ASA servers use more memory the longer they run.
 - Watch the chart for a day, then set the limit a few GB below the point where your PC starts to struggle.
 - You also get a Discord alert if the whole PC goes over 92% memory.
@@ -144,6 +144,8 @@ Without the service, automation only happens while Tamer is open. That covers cr
 
 ## Appearance
 To switch themes, go to **File > Settings > General > Appearance** and choose **Match Windows** (the default), **Light** or **Dark**. The change applies instantly. With Match Windows, Tamer follows Windows' dark/light app setting automatically. The title bar and the File / Help menu bar follow the theme too. Alt+F and Alt+H open the menus.
+
+**Text size:** **File > Settings > General > Text size** offers **Normal**, **Large** (the default) and **Larger**. All text changes straight away: headings, lists, logs and buttons. A few column widths settle fully the next time you open Tamer.
 
 Both themes use Tamer's green:
 - The main buttons (**Start**, **Install / Update**, **Start all**, the mod **Install** button and the **Save** buttons) are green. They turn grey when they can't be used right now, for example Start while the server is already running.
@@ -194,6 +196,9 @@ Without a token, that one step is skipped. The **Search BattleMetrics** button o
 ## Window
 Tamer opens at a size that fits your screen and remembers its size, position and maximized state. Every tab works down to about 900×560: tables shrink instead of disappearing, and toolbars wrap onto extra rows. Drag the dividers to give a table more room.
 
+## Server order
+Drag a server up or down in the list, or select it and use the **▲ / ▼** arrows next to **Servers** (or **Ctrl+Up / Ctrl+Down**). The order is saved, and **Start all**, **Update all** and auto-start go down the list in that order, so put the server that should start first at the top.
+
 ## Update all servers
 Click **Update all** (under the server list) or use **File > Update all servers...** to update every server one at a time. For each server in turn, Tamer:
 1. Warns players, using that server's warning times.
@@ -213,7 +218,7 @@ Only one server is ever down at once.
 ## Cluster tools
 - **Start all, one at a time.** Each server waits for the previous one to come online before it starts, which avoids a big memory and CPU spike. This also applies when Tamer or the background service auto-starts your servers at boot. Servers waiting their turn show **Queued to start**. **Stop all** cancels the queue. You can switch this off in **File > Settings > General**.
 - **Broadcast to all servers** (under the server list, or the File menu). Sends one message to every online server, as an on-screen broadcast and in chat.
-- **Stagger restart times** (**Automation** tab > **Stagger across servers...**, or the File menu). Gives every server the same daily schedule spaced N minutes apart, e.g. 04:00 / 04:10 / 04:20, so the cluster never goes down at once. It shows each server's times before applying. Optionally it also copies the warning times and the update-on-restart setting.
+- **Stagger restart times** (**Schedule** tab > **Stagger across servers...**, or the File menu). Gives every server the same daily schedule spaced N minutes apart, e.g. 04:00 / 04:10 / 04:20, so the cluster never goes down at once. It shows each server's times before applying. Optionally it also copies the warning times and the update-on-restart setting.
 
 ## Import an existing server
 Already running an ASA server you set up by hand, with a `.bat` file, or with another manager? Use **File > Import existing server...** (the welcome has a link to it too). Pick one of these:
@@ -248,7 +253,7 @@ Stop a server before copying game settings to it. ARK rewrites those files when 
 **Server** tab > **Advanced** > **Active event** sets ARK's `-ActiveEvent` launch option (WinterWonderland, FearEvolved, TurkeyTrial, Summer and so on). In ASA, most seasonal events are released as **official mods** instead. If nothing changes in game, click **Find event mod** to search the Mods tab for the event's mod, install it, then restart.
 
 ## Wipe / fresh start
-In the **Automation** tab's Backups section, **Wipe / fresh start...** offers three levels:
+In the **Schedule** tab's Backups section, **Wipe / fresh start...** offers three levels:
 - **Wild creatures only:** respawns every wild dino. The server must be online.
 - **World only:** removes structures, tames and items. Players keep their characters and tribes.
 - **Everything on this map:** a brand new world.
@@ -257,7 +262,7 @@ For cluster servers you can also clear the shared transfer data.
 
 A backup is always taken first, so you can undo a wipe from the Backups list. File wipes need you to type **WIPE** to confirm. Settings, mods and other maps are never touched.
 
-## Command line tab
+## Launch tab (command line)
 The launch options for each server, all in one place. Ticked options are added to the launch command, and you can preview the full command at the bottom of the tab.
 - **Who can join:** PC only (the default), all platforms (crossplay with Xbox and PlayStation), PC + Xbox, or PC + PlayStation. Sets `-ServerPlatform`.
 - **Server language** (`-culture`): changes the server's own messages, not players' game language.
@@ -282,7 +287,7 @@ Two things are left out on purpose:
 In the **Mods** tab, each installed mod has an **Active** circle and a **Passive** circle at the left of its row. The green tick shows which one is on. Click the empty circle to switch the mod.
 - A passive mod is still downloaded, updated and loaded. Its items, structures and dinos stay in the save, but its features are switched off.
 - Use it to retire a mod or an ended event without losing anything built with it, or so a cluster map can accept transfers of creatures and items from a mod it doesn't run.
-- Tamer adds `-passivemods=ID` and lists passive mods first in `-mods=`, as ARK requires. The **Command line** preview shows the result.
+- Tamer adds `-passivemods=ID` and lists passive mods first in `-mods=`, as ARK requires. The **Launch** tab's preview shows the result.
 - Takes effect the next time the server restarts.
 
 ## Plugins (AsaApi)
