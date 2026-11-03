@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.12.0"
+APP_VERSION = "1.13.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -993,6 +993,34 @@ def default_server(index: int, existing: list) -> dict:
         "cpu_cores": [],
         "asaapi": False,
     }
+
+
+# Copy to other servers: per-server settings that stay as they are on the server being copied to.
+# Mods and timed tasks aren't Tamer settings here: mods have their own tick box, timed tasks their own copy button.
+COPY_KEEP_SETTINGS = {"id", "name", "install_dir", "map", "session_name", "port", "rcon_port", "admin_password",
+                      "server_password", "public_ip", "auto_public_ip", "multihome", "multihome_rcon", "upnp",
+                      "cpu_cores", "autostart", "cluster", "asaapi", "mods", "passive_mods", "timed_tasks"}
+# The same idea for the game's ini files. Lower case, and matched in any section.
+COPY_KEEP_INI = {"sessionname", "port", "queryport", "rconport", "rconenabled", "multihome", "serveradminpassword",
+                 "serverpassword", "spectatorpassword", "activemods", "altsavedirectoryname"}
+
+
+def ini_merge_keep(source: str, target: str) -> str:
+    """The text of `source`, but with the COPY_KEEP_INI lines taken from `target`."""
+    def keep_key(line):
+        key = line.split("=", 1)[0].strip().lower() if "=" in line else ""
+        return key in COPY_KEEP_INI
+
+    merged = "\n".join(line for line in source.splitlines() if not keep_key(line))
+    section = None
+    for line in target.splitlines():
+        st = line.strip()
+        if st.startswith("[") and st.endswith("]"):
+            section = st[1:-1]
+        elif section and keep_key(line):
+            key, value = line.split("=", 1)
+            merged = ini_set(merged, section, key.strip(), value)
+    return merged
 
 
 class AppConfig:
@@ -2415,6 +2443,34 @@ class Manager:
             return False
         rt.mod_wait_since = None
         return True
+
+    def copy_settings_to(self, src, dst, mods=False, settings=False):
+        """Copy the mod list and/or Tamer settings. Quick, in memory: the caller saves the config."""
+        if mods:
+            dst["mods"], dst["passive_mods"] = src.get("mods", ""), src.get("passive_mods", "")
+        if settings:
+            dst.update(json.loads(json.dumps({k: v for k, v in src.items() if k not in COPY_KEEP_SETTINGS})))
+
+    def copy_game_settings_to(self, src, dst) -> str:
+        """Copy the game's ini files, keeping dst's name, ports and passwords. Returns a note for the user."""
+        src_dir, dst_dir = self.config_dir(src), self.config_dir(dst)
+        if os.path.normcase(os.path.abspath(src_dir)) == os.path.normcase(os.path.abspath(dst_dir)):
+            return "Game settings skipped: these servers share the same folder, so they already match."
+        if self.is_running(dst):
+            return "Game settings skipped: the server is running. Stop it and copy again."
+        names = [f for f in (GUS, GINI) if os.path.isfile(os.path.join(src_dir, f))]
+        if not names:
+            return f"Game settings skipped: {src['name']} has no game settings files yet. Start it once to create them."
+        os.makedirs(dst_dir, exist_ok=True)
+        stamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        for f in names:
+            path = os.path.join(dst_dir, f)
+            target = ""
+            if os.path.isfile(path):
+                target = read_text_file(path)
+                shutil.copy2(path, f"{path}.before-copy-{stamp}")
+            write_text_file(path, ini_merge_keep(read_text_file(os.path.join(src_dir, f)), target))
+        return "Game settings copied. The old files were saved next to the new ones."
 
     def check_mod_updates(self, only=None, manual=False):
         """Compare each running server's mods with CurseForge; restart or alert when a mod gets a new file."""
@@ -4318,6 +4374,8 @@ class App:
             ttk.Button(b2, text=text, command=cmd, width=1).grid(row=0, column=i, sticky="ew")
         ttk.Button(b2, text="Broadcast to all servers...", command=self._broadcast_all).grid(
             row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+        ttk.Button(b2, text="Copy to other servers...", command=self._copy_dialog).grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         self.cluster_lbl = ttk.Label(left, style="Hint.TLabel", wraplength=230, justify="left")
         self.cluster_lbl.pack(side="bottom", anchor="w", pady=(8, 0))
         left.bind("<Configure>", lambda e: self.cluster_lbl.configure(wraplength=max(120, e.width - 8)), add="+")
@@ -6369,6 +6427,82 @@ class App:
             for t in base.get("timed_tasks", []):
                 t["id"] = secrets.token_hex(4)
             self._add_server(base=base)
+
+    def _copy_dialog(self):
+        s = self._need()
+        if not s:
+            return
+        others = [o for o in self.cfg.servers if o is not s]
+        if not others:
+            messagebox.showinfo(APP_NAME, "There are no other servers to copy to.")
+            return
+        if not self._save_form(silent=True):
+            return
+        d = tk.Toplevel(self.root)
+        d.title(f"Copy from {s['name']}")
+        d.transient(self.root)
+        d.grab_set()
+        self._copy_win = d
+        fr = ttk.Frame(d, padding=12)
+        fr.pack(fill="both", expand=True)
+        ttk.Label(fr, text=f"Copy from {s['name']} to these servers:").pack(anchor="w")
+        picked = {o["id"]: tk.BooleanVar(value=False) for o in others}
+        for o in others:
+            ttk.Checkbutton(fr, text=f"{o['name']} ({MAP_LABELS.get(o['map'], o['map'])})",
+                            variable=picked[o["id"]]).pack(anchor="w", padx=8)
+        ttk.Label(fr, text="What to copy:").pack(anchor="w", pady=(10, 0))
+        mods_v, game_v, tamer_v = tk.BooleanVar(value=True), tk.BooleanVar(value=True), tk.BooleanVar(value=True)
+        for var, text in [(mods_v, "Mods (replaces the list, load order and passive mods)"),
+                          (game_v, "Game settings (GameUserSettings.ini and Game.ini)"),
+                          (tamer_v, "Tamer settings (automation, backups, command line options)")]:
+            ttk.Checkbutton(fr, text=text, variable=var).pack(anchor="w", padx=8)
+        ttk.Label(fr, text="Name, map, ports, passwords and install folder are never copied. Neither are cluster, "
+                           "plugins, public IP, CPU cores or auto-start. Running servers keep their game settings.",
+                  style="Hint.TLabel", wraplength=460, justify="left").pack(anchor="w", pady=(10, 0))
+
+        def apply():
+            targets = [o for o in others if picked[o["id"]].get()]
+            what = [t for t, v in (("mods", mods_v), ("game settings", game_v), ("Tamer settings", tamer_v)) if v.get()]
+            if not targets or not what:
+                messagebox.showerror(APP_NAME, "Tick at least one server and one thing to copy.", parent=d)
+                return
+            if not messagebox.askyesno(APP_NAME, f"Replace the {', '.join(what)} on "
+                                                 f"{', '.join(o['name'] for o in targets)} with those from {s['name']}?",
+                                       parent=d):
+                return
+            d.destroy()
+            self._copy_run(s, targets, mods_v.get(), game_v.get(), tamer_v.get())
+
+        bar = ttk.Frame(fr)
+        bar.pack(fill="x", pady=(10, 0))
+        ttk.Button(bar, text="Cancel", command=d.destroy).pack(side="right")
+        ttk.Button(bar, text="Copy", command=apply).pack(side="right", padx=4)
+        self.themed_window(d)
+
+    def _copy_run(self, s, targets, mods, game, tamer):
+        for o in targets:
+            self.mgr.copy_settings_to(s, o, mods, tamer)
+        self.cfg.save()
+        self._refresh_server_list()
+
+        def work():
+            lines = []
+            for o in targets:
+                notes = []
+                if mods or tamer:
+                    what = " and ".join(t for t, on in (("Mods", mods), ("Tamer settings", tamer)) if on)
+                    notes.append(f"{what} copied" + (", from the next restart." if self.mgr.is_running(o) else "."))
+                if game:
+                    try:
+                        notes.append(self.mgr.copy_game_settings_to(s, o))
+                    except OSError as e:
+                        notes.append(f"Couldn't copy game settings: {e}. Check that the files aren't open elsewhere.")
+                self.mgr.log(o, f"Copied from {s['name']}: {' '.join(notes)}")
+                lines.append(f"{o['name']}: {' '.join(notes)}")
+            summary = "\n\n".join(lines)
+            self.q.put(("call", None, lambda: messagebox.showinfo(APP_NAME, summary)))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _remove_server(self):
         s = self.current()

@@ -35,7 +35,7 @@ A Windows desktop app for running ARK: Survival Ascended dedicated servers, incl
 `python tests/run_tests.py` runs everything this OS supports. `python tests/run_tests.py gui_passive test_cfkey` runs the named tests. Each test is a standalone script taking `<app folder> <screenshot folder>`.
 - **Logic and GUI tests** (`test_core`, `test_urls`, `test_bm`, `test_cfkey`, `test_mods` and `gui_*`) run anywhere. The GUI tests drive the real `App` and stub `messagebox` so dialogs don't block. A test that hangs is usually waiting on a dialog that isn't stubbed.
 - **Process tests** (`test_cmdline`, `test_crash_countdown`, `test_automation`, `test_diag_net`, `test_update_all`, `test_f4`, `test_asaapi`, `test_mod_wait`) start a pretend server through `tests/fakes.py`. On Windows that builds one real exe with PyInstaller (test-only, cached in the temp folder) which acts as both `ArkAscendedServer.exe` and `AsaApiLoader.exe`. `test_tasks_service` still doesn't run on Windows.
-- Tests must never run a real install: stub `ensure_steamcmd` or `_update`, because on Windows the real ones download SteamCMD and ARK.
+- Tests must never run a real install: stub `ensure_steamcmd` or `_update`, because on Windows the real ones download SteamCMD and ARK. Opening `App` with `autostart` on does this too, since auto-starting a server that isn't installed installs it.
 - Screenshots need ImageMagick's `import` (Linux). Without it they are skipped.
 - The tests were written on Linux under Xvfb. **Not yet verified on real Windows:** the tray icon, the Task Scheduler service and UAC prompts, the real AsaApiLoader, firewall rules and the GitHub release download. These are the most likely places for Windows bugs.
 

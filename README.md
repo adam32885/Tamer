@@ -174,6 +174,16 @@ Only one server is ever down at once.
 - **Broadcast to all servers** (under the server list, or the File menu). Sends one message to every online server, as an on-screen broadcast and in chat.
 - **Stagger restart times** (**Automation** tab > **Stagger across servers...**, or the File menu). Gives every server the same daily schedule spaced N minutes apart, e.g. 04:00 / 04:10 / 04:20, so the cluster never goes down at once. It shows each server's times before applying. Optionally it also copies the warning times and the update-on-restart setting.
 
+## Copy to other servers
+Select a server and click **Copy to other servers...** under the server list. Tick the servers to copy to, then what to copy:
+- **Mods:** replaces the mod list, load order and passive mods.
+- **Game settings:** replaces `GameUserSettings.ini` and `Game.ini`. The old files are saved next to the new ones, with `.before-copy-` and the date in their names.
+- **Tamer settings:** automation, backups, command line options and similar.
+
+Each server always keeps its own name, map, ports, passwords and install folder. Cluster, plugin, public IP, CPU core and auto-start choices aren't copied either. Timed messages have their own **Copy to other servers** button on the Messages tab.
+
+Stop a server before copying game settings to it. ARK rewrites those files when it shuts down, so Tamer skips them on a running server and tells you. Mods and Tamer settings still copy, and apply at its next restart.
+
 ## Events
 **Server** tab > **Advanced** > **Active event** sets ARK's `-ActiveEvent` launch option (WinterWonderland, FearEvolved, TurkeyTrial, Summer and so on). In ASA, most seasonal events are released as **official mods** instead. If nothing changes in game, click **Find event mod** to search the Mods tab for the event's mod, install it, then restart.
 
