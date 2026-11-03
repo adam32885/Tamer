@@ -17,7 +17,7 @@ root = tk.Tk(); app = am.App(root); errors = []; root.report_callback_exception 
 am.messagebox.askyesno = lambda *a, **k: True; am.messagebox.showinfo = lambda *a, **k: None
 def click(mid, passive):                                 # click a mod's real circle in the list
     x, y, _w, h = app.itree.bbox(mid, "#0")
-    x += 5 + app.mod_cell // 2 + (app.mod_cell if passive else 0)
+    x += round(app.mod_centres[passive])
     app.itree.event_generate("<ButtonPress-1>", x=x, y=y + h // 2)
     app.itree.event_generate("<ButtonRelease-1>", x=x, y=y + h // 2); root.update()
 def shows(mid, passive):

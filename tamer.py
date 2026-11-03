@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.13.1"
+APP_VERSION = "1.13.2"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -3898,10 +3898,10 @@ def without_indicator(layout):
     return out
 
 
-def mod_mode_images(cell, size=18):
+def mod_mode_images(width, centres, size=18):
     """Pictures for the installed mods list: (Active ticked, Passive ticked).
 
-    Each shows two circles side by side, each centred in a space `cell` pixels wide: a green circle
+    Each is `width` pixels wide with two circles, centred at the x positions in `centres`: a green circle
     with a white tick for the chosen mode, an empty one for the other. Built as PNGs here because
     tkinter can't draw smooth shapes on an image, and Tamer has no image library to lean on.
     """
@@ -3929,17 +3929,19 @@ def mod_mode_images(cell, size=18):
             return bytes(4)
         return bytes(sum(c[n] for c in hit) // len(hit) for n in range(3)) + bytes([255 * len(hit) // 16])
 
+    lefts = [max(0, min(width - size, round(c - size / 2))) for c in centres]
+
     def png(first_on):
-        gap = bytes(4 * ((cell - size) // 2))
-        tail = bytes(4 * (cell - size - (cell - size) // 2))
         raw = b""
         for py in range(size):
-            row = [gap + b"".join(pixel(px, py, on) for px in range(size)) + tail for on in (first_on, not first_on)]
-            raw += b"\0" + row[0] + row[1]
+            row = bytearray(4 * width)
+            for left, on in zip(lefts, (first_on, not first_on)):
+                row[4 * left:4 * (left + size)] = b"".join(pixel(px, py, on) for px in range(size))
+            raw += b"\0" + bytes(row)
 
         def chunk(kind, data):
             return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", cell * 2, size, 8, 6, 0, 0, 0))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, size, 8, 6, 0, 0, 0))
                 + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
     return tuple(tk.PhotoImage(data=base64.b64encode(png(on)), format="png") for on in (True, False))
@@ -4304,6 +4306,8 @@ class App:
         self.task_tree.tag_configure("off", foreground=c["off"])
         self.plugin_tree.tag_configure("off", foreground=c["off"])
         self.itree.tag_configure("passive", foreground=c["muted"])
+        self._mod_mode_layout()
+        self._refresh_installed_mods()
         self.plugin_tree.tag_configure("bad", foreground=c["bad"])
         self._refresh_header()
         self._refresh_perf()
@@ -4822,8 +4826,11 @@ class App:
         self.mtree.heading("updated", text="Updated")
         self.mtree.column("#0", width=200, minwidth=100)
         self.mtree.column("author", width=90, minwidth=50)
-        self.mtree.column("downloads", width=72, minwidth=50, anchor="e", stretch=False)
-        self.mtree.column("updated", width=80, minwidth=60, anchor="center", stretch=False)
+        # Date and ID widths come from the text, so they still fit when Windows display scaling makes it bigger
+        font = tkfont.nametofont("TkDefaultFont")
+        date_w, id_w = font.measure("2026-10-30") + 16, font.measure("0000000") + 16
+        self.mtree.column("downloads", width=max(72, font.measure("Downloads") + 16), minwidth=50, anchor="e", stretch=False)
+        self.mtree.column("updated", width=date_w, minwidth=date_w, anchor="center", stretch=False)
         self.mtree.tag_configure("installed", foreground=self.colors["good"])
         ms = ttk.Scrollbar(left, orient="vertical", command=self.mtree.yview)
         self.mtree.configure(yscrollcommand=ms.set)
@@ -4856,21 +4863,14 @@ class App:
         inf.pack(fill="both", expand=True, pady=(6, 0))
         self.itree = ttk.Treeview(inf, columns=("name", "id", "updated"), show="tree headings", selectmode="browse",
                                   height=3, style="Mods.Treeview")
-        # A Treeview can only show pictures in its first column, so one picture holds both circles.
-        font = tkfont.nametofont("TkHeadingFont")
-        word_a, word_p, space = font.measure("Active"), font.measure("Passive"), font.measure(" ")
-        self.mod_cell = max(word_p + 12, 44)
-        self.mod_images = mod_mode_images(self.mod_cell)
-        self.itree.heading("#0", anchor="w", text=" " * round((self.mod_cell - word_a) / 2 / space) + "Active"
-                           + " " * round((self.mod_cell - (word_a + word_p) / 2) / space) + "Passive")
-        self.itree.column("#0", width=self.mod_cell * 2 + 10, minwidth=self.mod_cell * 2 + 10, stretch=False)
+        self._mod_mode_layout()
         self.itree.heading("name", text="Mod", anchor="w")
         self.itree.column("name", width=150, minwidth=80)
         self.itree.tag_configure("passive", foreground=self.colors["muted"])
         self.itree.heading("id", text="ID")
         self.itree.heading("updated", text="Updated")
-        self.itree.column("id", width=60, minwidth=50, anchor="center", stretch=False)
-        self.itree.column("updated", width=78, minwidth=60, anchor="center", stretch=False)
+        self.itree.column("id", width=id_w, minwidth=id_w, anchor="center", stretch=False)
+        self.itree.column("updated", width=date_w, minwidth=date_w, anchor="center", stretch=False)
         ib = FlowFrame(inf)
         ib.pack(side="bottom", fill="x", pady=(4, 0))
         for text, cmd in [("Remove", self._mod_remove),
@@ -5039,13 +5039,35 @@ class App:
         self._mod_install(False, ids)
         self._mod_fetch_info()
 
+    def _mod_mode_layout(self):
+        """Size the Active / Passive column and draw its circles right under the heading words.
+
+        A Treeview can only show pictures in its first column, so one picture holds both circles. The heading
+        is centred, and headings are padded evenly in every theme, so the words' centres can be worked out.
+        Rows aren't: the theme may start them a few pixels in, so the picture allows for that. Rerun when the
+        theme changes.
+        """
+        font = tkfont.nametofont("TkHeadingFont")
+        word_a, word_p, space = font.measure("Active"), font.measure("Passive"), font.measure(" ")
+        width = max(word_p + 12, 44) * 2 + 10
+        gap = max(2, round((width / 2 - word_p) / space))
+        text_w = word_a + gap * space + word_p
+        left = (width - text_w) / 2
+        self.mod_centres = (left + word_a / 2, left + text_w - word_p / 2)  # from the column's left edge
+        pad = self.root.tk.splitlist(ttk.Style(self.root).lookup("Treeview.Item", "padding"))  # text or a list
+        self.mod_row_pad = round(self.root.winfo_fpixels(str(pad[0]))) if pad else 0
+        self.mod_images = mod_mode_images(width - self.mod_row_pad, [c - self.mod_row_pad for c in self.mod_centres])
+        self.itree.heading("#0", anchor="center", text="Active" + " " * gap + "Passive")
+        self.itree.column("#0", width=width, minwidth=width, stretch=False)
+
     def _mod_mode_cell_click(self, ev):
-        # The left half of the picture is Active and the right half is Passive. Clicking the ticked circle does nothing.
+        # Left of the middle is Active, right of it Passive. Clicking the ticked circle does nothing.
         if self.itree.identify_column(ev.x) != "#0" or self.itree.identify_region(ev.x, ev.y) != "tree":
             return
         mid = self.itree.identify_row(ev.y)
         if mid and self.current():
-            self._mod_set_passive(mid, ev.x >= self.mod_cell + 5)
+            x0 = self.itree.bbox(mid, "#0")[0] if self.itree.bbox(mid, "#0") else 0
+            self._mod_set_passive(mid, ev.x - x0 >= sum(self.mod_centres) / 2)
 
     def _mod_toggle_passive(self):
         s = self.current()
