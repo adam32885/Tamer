@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.17.0"
+APP_VERSION = "1.17.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -3234,6 +3234,14 @@ def tamer_latest() -> dict:
             "url": setup and setup.get("browser_download_url"), "name": setup and setup.get("name")}
 
 
+def plain_notes(text: str) -> str:
+    """GitHub release notes (Markdown) as plain text for a message box: no **bold**, `code` or [links](...)."""
+    text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)  # [text](url) -> text
+    text = re.sub(r"(\*\*|__|`)", "", text)
+    text = re.sub(r"^#+\s*", "", text, flags=re.M)  # headings
+    return re.sub(r"^\s*[-*]\s+", "• ", text, flags=re.M)  # bullets
+
+
 def tamer_installed_copy() -> bool:
     """True when this is the installer's copy of Tamer.exe, so running a newer installer updates this very copy.
     (A Tamer.exe somewhere else, or tamer.py, would get a second, separate install instead.)"""
@@ -4717,7 +4725,8 @@ class App:
         rel = self.tamer_update
         if not rel:
             return
-        notes = rel["notes"][:1200] + ("..." if len(rel["notes"]) > 1200 else "")
+        notes = plain_notes(rel["notes"])
+        notes = notes[:1200] + ("..." if len(notes) > 1200 else "")
         msg = f"Tamer {rel['version']} is out. You have {APP_VERSION}.\n\n" + (f"What's new:\n{notes}\n\n" if notes else "")
         if rel["url"] and tamer_installed_copy():
             if messagebox.askyesno(APP_NAME, msg + "Download and install it now? Tamer closes while it updates; "

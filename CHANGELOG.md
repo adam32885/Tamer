@@ -2,6 +2,9 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.17.1
+- The update window shows release notes as plain text, without the asterisks and other formatting marks.
+
 ## 1.17.0
 - **Welcome for new users:** the first time Tamer opens, a short step-by-step setup picks where to keep your servers (the drive with the most free space), sets up your first server's name, map, players and ports, and can start the install straight away. Run it again any time from **Help > Run the welcome again** to add another server.
 - New servers go in the folder you picked in the welcome, instead of inside Tamer's own folder.

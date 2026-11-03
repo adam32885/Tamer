@@ -26,7 +26,9 @@ sys.path.insert(0, sys.argv[1]); import tamer as am; import tkinter as tk
 
 assert am.version_tuple("v1.15.10") > am.version_tuple("1.15.9") > am.version_tuple("1.15") and \
     am.version_tuple("1.16.0") == (1, 16, 0), "versions compare as numbers"
-NEWER = {"tag_name": "v99.0.0", "body": "- Something new", "html_url": base + "/releases/tag/v99.0.0",
+assert am.plain_notes("## New\n- **Welcome** for `new` users, see [the README](https://x)\n* more") == \
+    "New\n• Welcome for new users, see the README\n• more", "release notes shown as plain text"
+NEWER = {"tag_name": "v99.0.0", "body": "- **Something new**", "html_url": base + "/releases/tag/v99.0.0",
          "assets": [{"name": "Tamer-Setup-99.0.0.exe", "browser_download_url": base + "/download/Tamer-Setup-99.0.0.exe"}]}
 
 cfg = am.AppConfig(); cfg.data.update(theme="dark", tamer_update_check=False); cfg.save()  # no automatic check
@@ -70,7 +72,8 @@ def c():
     assert app.update_link.winfo_rootx() < app.kofi_link.winfo_rootx(), "left of the Ko-fi link"
     assert not am.tamer_installed_copy(), "tests run from source"
     app.update_link.event_generate("<Button-1>"); root.update()   # not the installer's copy: release page only
-    assert "wasn't set up with the installer" in asked[-1] and "Something new" in asked[-1], asked[-1]
+    assert "wasn't set up with the installer" in asked[-1] and "• Something new" in asked[-1], asked[-1]
+    assert "**" not in asked[-1], "no Markdown markers in the update window"
     assert opened == [NEWER["html_url"]] and not started, (opened, started)
     am.tamer_installed_copy = lambda: True             # now pretend this is the installed copy
     app._tamer_update_dialog()
