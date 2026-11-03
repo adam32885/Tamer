@@ -10,6 +10,14 @@ class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
     def do_GET(self):
+        if self.path.endswith("/download/slow.exe"):     # 2 MB, slowly: time to watch the progress and cancel
+            self.send_response(200); self.send_header("Content-Length", str(2 * 1024 * 1024)); self.end_headers()
+            try:
+                for _ in range(32):
+                    self.wfile.write(b"x" * 65536); __import__("time").sleep(0.15)
+            except OSError:
+                pass
+            return
         if self.path.endswith("/download/Tamer-Setup-99.0.0.exe"):
             body = b"pretend installer"
         elif self.path.endswith("/releases/latest") and state["release"]:
@@ -85,7 +93,41 @@ def d():
     path = started[0][0]
     assert os.path.basename(path) == "Tamer-Setup-99.0.0.exe" and open(path, "rb").read() == b"pretend installer"
     assert exited, "Tamer closes so the installer can replace it"
+    log = open(os.path.join(am.DATA_DIR, "logs", "update.log"), encoding="utf-8").read()
+    assert "downloading" in log and "Installer started" in log, log
     os.remove(path)
+    # a slow download: the window shows how far it's got, and Cancel stops it cleanly
+    slow = {"version": "98.0.0", "name": "Tamer-Setup-98.0.0.exe", "url": base + "/download/slow.exe", "page": base + "/p"}
+    app._tamer_update_install(slow)
+    after(lambda: " of 2.0 MB" in label_text(), lambda: cancel_it(slow), tries=80)
+
+
+def cancel_it(slow):
+    assert "Downloading Tamer 98.0.0..." in label_text() and " of 2.0 MB" in label_text(), label_text()
+    next(b for b in app.update_win.winfo_children()[0].winfo_children()
+         if isinstance(b, am.ttk.Button) and b.cget("text") == "Cancel").invoke()
+    after(lambda: not app.update_win.winfo_exists(), lambda: cancelled(slow), tries=80)
+
+
+def label_text():
+    return " ".join(w.cget("text") for w in app.update_win.winfo_children()[0].winfo_children()
+                    if isinstance(w, am.ttk.Label))
+
+
+def cancelled(slow):
+    target = os.path.join(tempfile.gettempdir(), slow["name"])
+    assert not os.path.exists(target) and not os.path.exists(target + ".part"), "nothing left behind"
+    assert len(started) == 1 and len(exited) == 1, "not run, Tamer not closed"
+    # a download that fails: say why, offer the release page
+    asked.clear(); opened.clear()
+    app._tamer_update_install(dict(slow, url=base + "/download/missing.exe"))
+    after(lambda: asked, failed, tries=80)
+
+
+def failed():
+    assert "Couldn't download the update" in asked[-1] and "release page" in asked[-1], asked
+    assert opened == [base + "/p"] and len(started) == 1, (opened, started)
+    print("progress shown, Cancel cleans up, failures explained")
     state["release"] = dict(NEWER, tag_name=am.APP_VERSION)  # caught up: nothing newer
     infos.clear()
     app._tamer_update_check(manual=True)

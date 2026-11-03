@@ -2,6 +2,11 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.18.2
+- **Download and install** now shows a progress window ("Downloading Tamer… 4.3 of 15.0 MB") with a **Cancel** button, instead of a silent wait. If the download or the installer can't start, Tamer says why and offers the release page. Each step is written to `manager_data\logs\update.log`.
+- Fixed: without your own CurseForge API key, the Mods tab could show "(loading...)" for every installed mod, and the mod update check quietly stopped noticing new versions. The free CurseForge service Tamer uses stopped answering requests for several mods at once. Tamer now fetches them one at a time when that happens (41 mods take a few seconds). If a name really can't be found, the row says "(name not found - click Refresh)" and the reason goes to the Log tab.
+- Fixed: after removing all your servers, reopening Tamer made a new blank "Server 1". Now the list stays empty and the welcome opens, so you can set up a server or import one, or click Skip.
+
 ## 1.18.1
 - Fixed: after **Download and install**, the newly installed Tamer could fail to open with "Failed to load Python DLL". The update itself always worked, and opening Tamer from the Start menu was fine. Now it opens by itself, even when updating from an older version.
 - Fixed: ARK's log window was hidden for servers that don't use AsaApi too (such as imported ones), which left them with no window at all. Now it's only hidden for servers started with AsaApi. A window that's already hidden comes back by itself.

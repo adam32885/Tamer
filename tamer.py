@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.18.1"
+APP_VERSION = "1.18.2"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -794,11 +794,33 @@ class CurseForge:
         return mods, int(total)
 
     def get_mods(self, ids):
+        """Details of these mods. Asks for them all at once; when that's refused (the free proxy stopped answering
+        POST /mods in 2026: HTTP 404), asks for each one on its own, a few at a time. Mods CurseForge doesn't
+        know are left out; it only raises if not one could be fetched."""
         ids = [int(i) for i in ids if str(i).isdigit()]
         if not ids:
             return []
-        res = self._request("/mods", body={"modIds": ids})
-        return [normalize_mod(m) for m in res.get("data", [])]
+        if not getattr(self, "_batch_refused", False):
+            try:
+                res = self._request("/mods", body={"modIds": ids})
+                return [normalize_mod(m) for m in res.get("data", [])]
+            except RuntimeError as e:
+                if not re.search(r"HTTP 40[45]\b", str(e)):
+                    raise
+                self._batch_refused = True  # don't keep asking for batches this session
+        found, errors = {}, []
+
+        def one(mid):
+            try:
+                found[mid] = normalize_mod(self._request(f"/mods/{mid}")["data"])
+            except (RuntimeError, KeyError, TypeError) as e:
+                errors.append(e)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(one, ids))
+        if not found and errors:
+            raise errors[0] if isinstance(errors[0], RuntimeError) else RuntimeError(str(errors[0]))
+        return [found[i] for i in ids if i in found]
 
 
 # --------------------------------------------------------------------------------------
@@ -1383,8 +1405,8 @@ class AppConfig:
             merged.update(s)
             servers.append(merged)
         self.data["servers"] = servers
-        if not servers:
-            self.data["servers"].append(default_server(1, []))
+        if not servers and self.first_run:  # a brand-new Tamer gets a starter server for the welcome to fill in;
+            self.data["servers"].append(default_server(1, []))  # an empty list someone made themselves stays empty
             self.save()
 
     def save(self):
@@ -3482,6 +3504,16 @@ def plain_notes(text: str) -> str:
     return re.sub(r"^\s*[-*]\s+", "• ", text, flags=re.M)  # bullets
 
 
+def update_log(msg: str):
+    """A line in manager_data\\logs\\update.log, so a failed self-update can be traced afterwards."""
+    try:
+        os.makedirs(os.path.join(DATA_DIR, "logs"), exist_ok=True)
+        with open(os.path.join(DATA_DIR, "logs", "update.log"), "a", encoding="utf-8") as f:
+            f.write(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] {msg}\n")
+    except OSError:
+        pass
+
+
 def clean_child_env() -> dict:
     """This process's environment without the PyInstaller bookkeeping (_PYI_*, _MEIPASS*), for starting a program
     that may itself start Tamer.exe. Left in, they make the next Tamer.exe look for this one's unpacked files, which
@@ -4428,6 +4460,8 @@ def apply_ttk_theme(root, mode: str) -> dict:
            darkcolor=[("disabled", c["button"]), ("pressed", c["primary_press"]), ("active", c["primary_hover"])],
            bordercolor=[("disabled", c["border"]), ("focus", c["fg"])],
            foreground=[("disabled", c["muted"])])
+    st.configure("Horizontal.TProgressbar", background=c["primary"], troughcolor=c["bg2"], bordercolor=c["border"],
+                 lightcolor=c["primary"], darkcolor=c["primary"])
     st.configure("TLabelframe.Label", foreground=c["accent"], font=("Segoe UI", 9, "bold"))
     st.configure("Title.TLabel", foreground=c["accent"], font=("Segoe UI", 11, "bold"))
     st.configure("Header.TLabel", foreground=c["accent"], font=("Segoe UI", 16, "bold"))
@@ -4663,6 +4697,7 @@ class App:
         self.mod_results = {}
         self._mod_search_token = None
         self._mod_fetch_tried = set()
+        self._mod_fetch_failed = set()  # mod IDs whose name couldn't be fetched (shown as "name not found")
         self._tray_hint_shown = False
         self.mgr.autostart_enabled = not took_over  # servers were already being managed by the service
         for srv in self.cfg.servers:
@@ -4686,7 +4721,7 @@ class App:
         root.after(15000, self._watch_system_theme)
         root.after(150, self._pump)
         root.after(20000, self._tamer_update_tick)
-        if self.cfg.first_run:
+        if self.cfg.first_run or not self.cfg.servers:  # nothing to show yet: help set one up (or import one)
             root.after(600, self._welcome)
         self.mgr.start_monitor()
 
@@ -5150,29 +5185,95 @@ class App:
                 webbrowser.open(rel["page"])
 
     def _tamer_update_install(self, rel):
+        """Download the new installer with a progress window (and Cancel), then run it and close."""
         target = os.path.join(tempfile.gettempdir(), rel["name"])
+        state = {"got": 0, "total": 0, "error": None, "done": False}
+        cancel = threading.Event()
+        d = self.update_win = tk.Toplevel(self.root)
+        d.title("Updating Tamer")
+        d.transient(self.root)
+        d.resizable(False, False)
+        body = ttk.Frame(d, padding=16)
+        body.pack(fill="both", expand=True)
+        title = ttk.Label(body, text=f"Downloading Tamer {rel['version']}...", style="Status.TLabel")
+        title.pack(anchor="w")
+        bar = ttk.Progressbar(body, length=380, mode="indeterminate")
+        bar.pack(fill="x", pady=(10, 4))
+        bar.start(12)
+        amount = ttk.Label(body, text="Connecting to GitHub...", style="Hint.TLabel")
+        amount.pack(anchor="w")
+        b_cancel = ttk.Button(body, text="Cancel", command=lambda: (cancel.set(), update_log("Download cancelled.")))
+        b_cancel.pack(anchor="e", pady=(10, 0))
+        d.protocol("WM_DELETE_WINDOW", cancel.set)
+        update_log(f"Updating from {APP_VERSION} to {rel['version']}: downloading {rel['url']}")
 
         def work():
             try:
                 req = urllib.request.Request(rel["url"], headers={"User-Agent": f"Tamer/{APP_VERSION}"})
-                with urllib.request.urlopen(req, timeout=120) as r, open(target + ".part", "wb") as f:
-                    shutil.copyfileobj(r, f)
-                os.replace(target + ".part", target)
-            except Exception as e:
-                self.q.put(("error", None, f"Couldn't download the update ({e}).\n\nYou can get it from "
-                                           f"{rel['page']}"))
-                return
-
-            def run():
-                try:
-                    subprocess.Popen([target], close_fds=True, env=clean_child_env())  # it opens the new Tamer at the end
-                except OSError as e:
-                    messagebox.showerror(APP_NAME, f"Couldn't start the installer ({e}). It's saved as:\n{target}")
+                with urllib.request.urlopen(req, timeout=60) as r, open(target + ".part", "wb") as f:
+                    state["total"] = int(r.headers.get("Content-Length") or 0)
+                    while not cancel.is_set():
+                        chunk = r.read(64 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        state["got"] += len(chunk)
+                if cancel.is_set():
+                    os.remove(target + ".part")
                     return
-                self._exit()  # the installer replaces Tamer.exe, so get out of its way
-            self.q.put(("call", None, run))
-        self.mgr.log(self.current() or self.cfg.servers[0], f"Downloading Tamer {rel['version']}...")
+                if state["total"] and state["got"] != state["total"]:
+                    raise RuntimeError(f"the download stopped early ({state['got']} of {state['total']} bytes)")
+                os.replace(target + ".part", target)
+                update_log(f"Downloaded {state['got']} bytes to {target}")
+            except Exception as e:
+                state["error"] = e
+                update_log(f"Download failed: {e!r}")
+            finally:
+                state["done"] = True
+
+        def tick():
+            if not d.winfo_exists():
+                return
+            mb = 1024 * 1024
+            if state["total"]:
+                if str(bar.cget("mode")) != "determinate":
+                    bar.stop()
+                    bar.configure(mode="determinate", maximum=state["total"])
+                bar.configure(value=state["got"])
+                amount.configure(text=f"{state['got'] / mb:.1f} of {state['total'] / mb:.1f} MB")
+            elif state["got"]:
+                amount.configure(text=f"{state['got'] / mb:.1f} MB")
+            if not state["done"]:
+                d.after(150, tick)
+                return
+            if cancel.is_set():
+                d.destroy()
+                return
+            if state["error"]:
+                d.destroy()
+                if messagebox.askyesno(APP_NAME, f"Couldn't download the update: {state['error']}.\n\nCheck this PC "
+                                                 "can reach github.com, or download the installer yourself. Open the "
+                                                 "release page?"):
+                    webbrowser.open(rel["page"])
+                return
+            title.configure(text="Starting the installer...")
+            b_cancel.configure(state="disabled")
+            d.update()
+            try:
+                subprocess.Popen([target], close_fds=True, env=clean_child_env())  # it opens the new Tamer at the end
+            except OSError as e:
+                update_log(f"Couldn't start the installer: {e!r}")
+                d.destroy()
+                messagebox.showerror(APP_NAME, f"Couldn't start the installer ({e}).\n\nIt's saved here - run it "
+                                               f"yourself:\n{target}")
+                return
+            update_log("Installer started; closing Tamer so it can be replaced.")
+            d.destroy()
+            self._exit()  # the installer replaces Tamer.exe, so get out of its way
+
         threading.Thread(target=work, daemon=True).start()
+        self.themed_window(d)
+        d.after(150, tick)
 
     def _watch_system_theme(self):
         if self.cfg.data.get("theme", "system") == "system" and self._effective_theme() != self.theme_mode:
@@ -6059,8 +6160,10 @@ class App:
             if not m:
                 missing.append(mid)
             passive = mid in self._passive_ids(s)
+            name = m["name"] if m else ("(name not found - click Refresh)" if mid in self._mod_fetch_failed
+                                        else "(loading...)")
             self.itree.insert("", "end", iid=mid, image=self.mod_images[passive],
-                              values=(m["name"] if m else "(loading...)", mid, m.get("updated", "") if m else ""),
+                              values=(name, mid, m.get("updated", "") if m else ""),
                               tags=("passive",) if passive else ())
         if missing:
             self._mod_fetch_info()
@@ -6074,19 +6177,27 @@ class App:
         if not ids:
             return
         self._mod_fetch_tried.update(ids)
+        self._mod_fetch_failed.difference_update(ids)
 
         def work():
             try:
                 mods = self.cf.get_mods(ids)
             except Exception as e:
-                if force:
-                    msg = str(e)
-                    self.q.put(("call", None, lambda: messagebox.showerror(APP_NAME, msg)))
+                msg = str(e)
+
+                def failed():  # say so on the row instead of "(loading...)" forever, and why in the Log tab
+                    self._mod_fetch_failed.update(ids)
+                    self.mgr.log(s, f"Couldn't load the names of {len(ids)} mod(s) from CurseForge: {msg.splitlines()[0]}")
+                    self._refresh_installed_mods()
+                    if force:
+                        messagebox.showerror(APP_NAME, msg)
+                self.q.put(("call", None, failed))
                 return
 
             def done():
                 for m in mods:
                     cache[m["id"]] = m
+                self._mod_fetch_failed.update(i for i in ids if i not in cache)  # CurseForge doesn't know these
                 self.cfg.save()
                 self._refresh_installed_mods()
 
