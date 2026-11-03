@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.16.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -7665,7 +7665,10 @@ class App:
             return True
 
         def restart():
+            run_var.set(True)  # starting it means "keep it running", or the next check would stop it again
             if save(quiet=True):
+                self.mgr.chat_crashes.clear()  # a fresh start after Tamer gave up gets a fresh count
+
                 def work():
                     self.mgr.chat_stop("restarted from the Tamer Chat window")
                     err = self.mgr.chat_start()

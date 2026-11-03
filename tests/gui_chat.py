@@ -50,6 +50,15 @@ def a():
 def b():
     d = app.chat_win
     assert any(l.cget("text") == "Bot stopped" for l in widgets(d, ttk.Label)), "status shown"
+    # Tamer gave up after 5 stops, which unticked "keep running"; then Start is clicked
+    started = []
+    app.mgr.chat_start = lambda *a, **k: started.append(True) or ""
+    app.mgr.chat_stop = lambda *a, **k: None
+    app.cfg.data["chat_run"] = False; app.mgr.chat_crashes.extend([1.0] * 5)
+    d.destroy(); app._chat_dialog(); root.update(); d = app.chat_win
+    button(d, "Start / restart bot").invoke(); root.update(); root.after(300); root.update()
+    assert app.cfg.data["chat_run"], "Start also means keep it running, so the next check doesn't stop it"
+    assert not app.mgr.chat_crashes and started, (list(app.mgr.chat_crashes), started)
     shown.clear()
     app.nb.select(app.plugins_tab); root.update()
     button(app.plugins_tab, "Install Tamer Chat").invoke()
