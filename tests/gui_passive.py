@@ -15,28 +15,30 @@ s0["passive_mods"] = "999"; assert "-passivemods" not in m.to_cmdline(m.build_co
 s0["passive_mods"] = ""; cfg.save()
 root = tk.Tk(); app = am.App(root); errors = []; root.report_callback_exception = lambda *a: (errors.append(a), __import__("traceback").print_exception(*a), root.destroy())
 am.messagebox.askyesno = lambda *a, **k: True; am.messagebox.showinfo = lambda *a, **k: None
+def click(mid, passive):                                 # click a mod's real circle in the list
+    x, y, _w, h = app.itree.bbox(mid, "#0")
+    x += 5 + app.mod_cell // 2 + (app.mod_cell if passive else 0)
+    app.itree.event_generate("<ButtonPress-1>", x=x, y=y + h // 2)
+    app.itree.event_generate("<ButtonRelease-1>", x=x, y=y + h // 2); root.update()
+def shows(mid, passive):
+    return str(app.itree.item(mid, "image")[0]) == str(app.mod_images[passive])
 def a():
-    app.nb.select(app.mods_tab); app._refresh_installed_mods()
-    assert app.mod_passive_chk.instate(["disabled"]), "disabled with no selection"
-    app.itree.selection_set("222"); root.update()
-    assert app.mod_active_var.get() and not app.mod_passive_var.get()
-    app.mod_passive_chk.invoke(); root.update()          # tick Passive
-    s = app.current(); assert s["passive_mods"] == "222" and app.itree.set("222", "mode") == "Passive"
-    assert app.mod_passive_var.get() and not app.mod_active_var.get(), "boxes are exclusive"
-    app.mod_passive_chk.invoke(); root.update()          # unticking the ticked box keeps it passive
-    assert s["passive_mods"] == "222" and app.mod_passive_var.get()
+    app.nb.select(app.mods_tab); app._refresh_installed_mods(); root.update()
+    assert shows("222", False) and shows("111", False)
+    click("222", True)                                   # tick Passive, without selecting the mod first
+    s = app.current(); assert s["passive_mods"] == "222" and shows("222", True)
+    assert app.itree.selection() == ("222",), "stays selected"
+    click("222", True)                                   # clicking the ticked circle keeps it passive
+    assert s["passive_mods"] == "222" and shows("222", True)
     assert "-passivemods=222" in app.cmd_preview.get("1.0", "end")
-    app.itree.selection_set("111"); root.update()
-    assert app.mod_active_var.get() and not app.mod_passive_var.get(), "follows selection"
-    app.itree.selection_set("222"); root.update()
+    assert shows("111", False), "other rows unchanged"
     root.after(800, lambda: (_shot(["import", "-window", "root", "-crop", "1280x820+0+0", sys.argv[2] + "/passive.png"]), b()))
 def b():
     s = app.current()
-    app.mod_active_chk.invoke(); root.update()           # tick Active
-    assert s["passive_mods"] == "" and app.itree.set("222", "mode") == "Active"
+    click("222", False)                                  # tick Active
+    assert s["passive_mods"] == "" and shows("222", False)
     app._mod_set_passive("333", True); assert s["passive_mods"] == "333"
     app.itree.selection_set("333"); app._mod_remove()
     assert s["mods"] == "111,222" and s["passive_mods"] == "", (s["mods"], s["passive_mods"])
-    assert app.mod_active_chk.instate(["disabled"])
     app.mgr.stop_event.set(); root.destroy()
 root.after(1500, a); root.mainloop(); print("errors:", errors); assert not errors; print("GUI OK")

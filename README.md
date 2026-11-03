@@ -206,7 +206,7 @@ Two things are left out on purpose:
 - **Colour-event flags.** You can still add those in Extra -arguments.
 
 ## Passive mods
-In the **Mods** tab, select an installed mod and tick **Active** or **Passive** under the installed list. You can also click a mod's **Mode** cell to switch it.
+In the **Mods** tab, each installed mod has an **Active** circle and a **Passive** circle at the left of its row. The green tick shows which one is on. Click the empty circle to switch the mod.
 - A passive mod is still downloaded, updated and loaded. Its items, structures and dinos stay in the save, but its features are switched off.
 - Use it to retire a mod or an ended event without losing anything built with it, or so a cluster map can accept transfers of creatures and items from a mod it doesn't run.
 - Tamer adds `-passivemods=ID` and lists passive mods first in `-mods=`, as ARK requires. The **Command line** preview shows the result.

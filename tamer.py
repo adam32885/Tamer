@@ -21,6 +21,7 @@ Windows Python installer). Run:  python tamer.py
 """
 from __future__ import annotations
 
+import base64
 import collections
 import datetime as dt
 import json
@@ -42,16 +43,17 @@ import urllib.parse
 import urllib.request
 import webbrowser
 import zipfile
+import zlib
 
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 
 # --------------------------------------------------------------------------------------
 # Constants
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.11.3"
+APP_VERSION = "1.11.4"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -3789,6 +3791,63 @@ def set_dark_titlebar(win, dark: bool):
         pass
 
 
+def without_indicator(layout):
+    """A copy of a ttk layout with the tree expand arrow taken out."""
+    out = []
+    for name, opts in layout:
+        if "indicator" not in name:
+            kids = opts.get("children")
+            out.append((name, {**opts, "children": without_indicator(kids)} if kids else opts))
+    return out
+
+
+def mod_mode_images(cell, size=18):
+    """Pictures for the installed mods list: (Active ticked, Passive ticked).
+
+    Each shows two circles side by side, each centred in a space `cell` pixels wide: a green circle
+    with a white tick for the chosen mode, an empty one for the other. Built as PNGs here because
+    tkinter can't draw smooth shapes on an image, and Tamer has no image library to lean on.
+    """
+    def segment_dist(x, y, a, b):
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        t = max(0, min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy)))
+        return math.hypot(x - a[0] - t * dx, y - a[1] - t * dy)
+
+    def colour_at(x, y, on):
+        r = size / 2
+        d = math.hypot(x - r, y - r)
+        if d > r:
+            return None
+        if not on:
+            return (140, 146, 156) if d >= r - 1.6 else None
+        tick = [(r + r * a, r + r * b) for a, b in ((-0.46, 0.04), (-0.12, 0.38), (0.48, -0.32))]
+        if min(segment_dist(x, y, tick[0], tick[1]), segment_dist(x, y, tick[1], tick[2])) <= r * 0.13:
+            return (255, 255, 255)
+        return (46, 160, 67)
+
+    def pixel(px, py, on):
+        samples = [colour_at(px + (i + 0.5) / 4, py + (j + 0.5) / 4, on) for i in range(4) for j in range(4)]
+        hit = [c for c in samples if c]
+        if not hit:
+            return bytes(4)
+        return bytes(sum(c[n] for c in hit) // len(hit) for n in range(3)) + bytes([255 * len(hit) // 16])
+
+    def png(first_on):
+        gap = bytes(4 * ((cell - size) // 2))
+        tail = bytes(4 * (cell - size - (cell - size) // 2))
+        raw = b""
+        for py in range(size):
+            row = [gap + b"".join(pixel(px, py, on) for px in range(size)) + tail for on in (first_on, not first_on)]
+            raw += b"\0" + row[0] + row[1]
+
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", cell * 2, size, 8, 6, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+    return tuple(tk.PhotoImage(data=base64.b64encode(png(on)), format="png") for on in (True, False))
+
+
 def apply_ttk_theme(root, mode: str) -> dict:
     """Style ttk + classic tk widgets for 'light' or 'dark'. Returns the palette."""
     c = THEMES[mode]
@@ -3850,6 +3909,9 @@ def apply_ttk_theme(root, mode: str) -> dict:
     st.configure("Hint.TLabel", foreground=c["muted"])
     st.configure("Warn.TLabel", foreground=c["bad"])
     st.configure("Treeview", rowheight=26)
+    # Installed mods list: no gap for an expand arrow, so the circles line up with their headings
+    st.layout("Mods.Treeview", st.layout("Treeview"))
+    st.layout("Mods.Treeview.Item", without_indicator(st.layout("Treeview.Item")))
     # classic tk widgets (Text, Canvas, dialogs from simpledialog, menus) pick these up when created
     opts = {"*Text.background": c["field"], "*Text.foreground": c["fg"], "*Text.insertBackground": c["fg"],
             "*Text.selectBackground": c["select_bg"], "*Text.selectForeground": c["select_fg"],
@@ -4658,7 +4720,8 @@ class App:
         pw.add(right, weight=1)
         initial_sash(pw, 0.58)
         mod_hint = ttk.Label(right, text="The server downloads and updates its mods automatically when it starts, "
-                                         "so restart it after adding or removing mods.",
+                                         "so restart it after adding, removing or switching mods. "
+                                         "A passive mod keeps its data but has its features off.",
                              style="Hint.TLabel", wraplength=300, justify="left")
         mod_hint.pack(side="bottom", anchor="w", pady=(6, 0))
         right.bind("<Configure>", lambda e: mod_hint.configure(wraplength=max(120, e.width - 8)), add="+")
@@ -4668,41 +4731,33 @@ class App:
         self.mod_details.pack(fill="x")
         inf = ttk.LabelFrame(right, text="Installed on this server (load order)", padding=6)
         inf.pack(fill="both", expand=True, pady=(6, 0))
-        self.itree = ttk.Treeview(inf, columns=("mode", "id", "updated"), show="tree headings", selectmode="browse",
-                                  height=3)
-        self.itree.heading("#0", text="Mod")
-        self.itree.heading("mode", text="Mode")
-        self.itree.column("mode", width=62, minwidth=55, anchor="center", stretch=False)
+        self.itree = ttk.Treeview(inf, columns=("name", "id", "updated"), show="tree headings", selectmode="browse",
+                                  height=3, style="Mods.Treeview")
+        # A Treeview can only show pictures in its first column, so one picture holds both circles.
+        font = tkfont.nametofont("TkHeadingFont")
+        word_a, word_p, space = font.measure("Active"), font.measure("Passive"), font.measure(" ")
+        self.mod_cell = max(word_p + 12, 44)
+        self.mod_images = mod_mode_images(self.mod_cell)
+        self.itree.heading("#0", anchor="w", text=" " * round((self.mod_cell - word_a) / 2 / space) + "Active"
+                           + " " * round((self.mod_cell - (word_a + word_p) / 2) / space) + "Passive")
+        self.itree.column("#0", width=self.mod_cell * 2 + 10, minwidth=self.mod_cell * 2 + 10, stretch=False)
+        self.itree.heading("name", text="Mod", anchor="w")
+        self.itree.column("name", width=150, minwidth=80)
         self.itree.tag_configure("passive", foreground=self.colors["muted"])
         self.itree.heading("id", text="ID")
         self.itree.heading("updated", text="Updated")
-        self.itree.column("#0", width=150, minwidth=80)
         self.itree.column("id", width=60, minwidth=50, anchor="center", stretch=False)
         self.itree.column("updated", width=78, minwidth=60, anchor="center", stretch=False)
         ib = FlowFrame(inf)
         ib.pack(side="bottom", fill="x", pady=(4, 0))
-        mf = ttk.Frame(inf)
-        mf.pack(side="bottom", fill="x", pady=(4, 0))
-        ttk.Label(mf, text="Selected mod:").pack(side="left")
-        self.mod_active_var = tk.BooleanVar(value=False)
-        self.mod_passive_var = tk.BooleanVar(value=False)
-        self.mod_active_chk = ttk.Checkbutton(mf, text="Active", variable=self.mod_active_var,
-                                              command=lambda: self._mod_mode_clicked(False))
-        self.mod_passive_chk = ttk.Checkbutton(mf, text="Passive", variable=self.mod_passive_var,
-                                               command=lambda: self._mod_mode_clicked(True))
-        self.mod_active_chk.pack(side="left", padx=(6, 0))
-        self.mod_passive_chk.pack(side="left", padx=(6, 0))
-        self.mod_mode_note = ttk.Label(mf, text="", style="Hint.TLabel")
-        self.mod_mode_note.pack(side="left", padx=(8, 0))
         for text, cmd in [("Remove", self._mod_remove),
                           ("Up", lambda: self._mod_move(-1)),
                           ("Down", lambda: self._mod_move(1)), ("Open page", lambda: self._mod_open(self.itree)),
                           ("Refresh", lambda: self._mod_fetch_info(force=True))]:
             ib.add(ttk.Button(ib, text=text, command=cmd))
         self.itree.pack(fill="both", expand=True)
-        self.itree.bind("<<TreeviewSelect>>", lambda ev: (self._mod_show_details(self.itree), self._mod_sync_mode()))
+        self.itree.bind("<<TreeviewSelect>>", lambda ev: self._mod_show_details(self.itree))
         self.itree.bind("<ButtonRelease-1>", self._mod_mode_cell_click, add="+")
-        self._mod_sync_mode()
 
     # ---- mods ---------------------------------------------------------------------
     def _mod_ids(self, s):
@@ -4861,38 +4916,13 @@ class App:
         self._mod_install(False, ids)
         self._mod_fetch_info()
 
-    def _mod_sync_mode(self):
-        """Tick Active or Passive to match the selected installed mod (both off and disabled when none)."""
-        s = self.current()
-        sel = self.itree.selection() if s else ()
-        if not sel:
-            self.mod_active_var.set(False)
-            self.mod_passive_var.set(False)
-            for c in (self.mod_active_chk, self.mod_passive_chk):
-                c.state(["disabled"])
-            self.mod_mode_note.configure(text="")
-            return
-        passive = sel[0] in self._passive_ids(s)
-        self.mod_active_var.set(not passive)
-        self.mod_passive_var.set(passive)
-        for c in (self.mod_active_chk, self.mod_passive_chk):
-            c.state(["!disabled"])
-        self.mod_mode_note.configure(text="features off, data kept" if passive else "")
-
-    def _mod_mode_clicked(self, passive):
-        # The two boxes act as a pair: ticking one unticks the other; unticking the ticked one is ignored.
-        sel = self.itree.selection()
-        if sel:
-            self._mod_set_passive(sel[0], passive)
-        self._mod_sync_mode()
-
     def _mod_mode_cell_click(self, ev):
-        if self.itree.identify_region(ev.x, ev.y) != "cell" or self.itree.identify_column(ev.x) != "#1":
+        # The left half of the picture is Active and the right half is Passive. Clicking the ticked circle does nothing.
+        if self.itree.identify_column(ev.x) != "#0" or self.itree.identify_region(ev.x, ev.y) != "tree":
             return
         mid = self.itree.identify_row(ev.y)
-        s = self.current()
-        if mid and s:
-            self._mod_set_passive(mid, mid not in self._passive_ids(s))
+        if mid and self.current():
+            self._mod_set_passive(mid, ev.x >= self.mod_cell + 5)
 
     def _mod_toggle_passive(self):
         s = self.current()
@@ -4924,9 +4954,6 @@ class App:
         self.itree.selection_set(mid)
         self.itree.see(mid)
         self._update_cmd_preview()
-        self._mod_sync_mode()
-        if self.mgr.is_running(s):
-            self.mod_mode_note.configure(text="restart to apply")
 
     def _mod_remove(self):
         s = self.current()
@@ -4993,11 +5020,9 @@ class App:
             if not m:
                 missing.append(mid)
             passive = mid in self._passive_ids(s)
-            self.itree.insert("", "end", iid=mid, text=m["name"] if m else "(loading...)",
-                              values=("Passive" if passive else "Active", mid, m.get("updated", "") if m else ""),
+            self.itree.insert("", "end", iid=mid, image=self.mod_images[passive],
+                              values=(m["name"] if m else "(loading...)", mid, m.get("updated", "") if m else ""),
                               tags=("passive",) if passive else ())
-        if hasattr(self, "mod_active_chk"):
-            self._mod_sync_mode()
         if missing:
             self._mod_fetch_info()
 

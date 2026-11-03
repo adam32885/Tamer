@@ -92,7 +92,7 @@ def step4():
     assert s["mods"] == "900010,900000,900002", s["mods"]
     assert other["mods"] == "900000,900002", other["mods"]
     assert app.form_vars["mods"].get() == s["mods"]
-    names = [app.itree.item(i, "text") for i in app.itree.get_children()]
+    names = [app.itree.set(i, "name") for i in app.itree.get_children()]
     assert names == ["Super Structures 10", "Super Structures 0", "Super Structures 2"], names
     assert app.mtree.item("900000", "text").startswith("✓")
     assert "-mods=900010,900000,900002" in app.cmd_preview.get("1.0", "end")
