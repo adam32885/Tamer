@@ -13,7 +13,20 @@ for name, info in (("ArkShop", {"FullName": "Ark Shop", "Version": 1.5, "Descrip
     if info: am.write_json_file(os.path.join(d, "PluginInfo.json"), info); open(os.path.join(d, "config.json"), "w").write("{}")
 am.set_plugin_enabled(s, "DiscordBridge", False)
 root = tk.Tk(); app = am.App(root); errors = []; root.report_callback_exception = lambda *a: errors.append(a)
+opened, infos = [], []
+am.open_path = opened.append; am.messagebox.showinfo = lambda *a, **k: infos.append(a)
+def button(text):
+    stack = [app.plugins_tab]
+    while stack:
+        w = stack.pop(); stack.extend(w.winfo_children())
+        if isinstance(w, am.ttk.Button) and w.cget("text") == text:
+            return w
+    raise AssertionError(f"no {text!r} button")
 def a():
     app.nb.select(app.plugins_tab); app._api_latest_tag = "1.22"; app._refresh_plugins()
+    button("Plugins folder").invoke(); assert opened == [p["plugins"]], opened
+    os.rename(p["plugins"], p["plugins"] + "_x"); button("Plugins folder").invoke()
+    os.rename(p["plugins"] + "_x", p["plugins"])
+    assert opened == [p["plugins"]] and "Install AsaApi first" in infos[-1][1], infos
     root.after(900, lambda: (_shot(["import", "-window", "root", "-crop", "1280x820+0+0", sys.argv[2] + "/plugins.png"]), app.mgr.stop_event.set(), root.destroy()))
 root.after(1500, a); root.mainloop(); print("errors:", errors); assert not errors; print("GUI OK")

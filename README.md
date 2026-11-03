@@ -239,7 +239,8 @@ The **Plugins** tab installs and manages **AsaApi**, the community server-plugin
 - **Start this server with AsaApi** launches the server through `AsaApiLoader.exe`. Crash detection, CPU priority and core settings, and memory monitoring all follow the real server process.
 - **Plugins:**
   - **Install plugin (.zip)** works with both common zip layouts. Updating a plugin keeps its `config.json`.
-  - You can also enable or disable a plugin, **Edit config**, **Open folder** and **Remove**.
+  - **Plugins folder** opens the folder that holds all the plugins (`Win64\ArkApi\Plugins`).
+  - You can also enable or disable a plugin, **Edit config**, open the **Selected plugin's folder** and **Remove** it.
   - **Reload now** reloads a plugin on a running server, using AsaApi's `plugins.unload` / `plugins.load`.
 - **Remove AsaApi** deletes only AsaApi's own files. Your plugins and settings stay.
 - The **Troubleshooter** flags AsaApi switched on but not installed, and errors in AsaApi's logs (`Win64\logs`).

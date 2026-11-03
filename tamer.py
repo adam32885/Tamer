@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.14.1"
+APP_VERSION = "1.14.2"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -5299,8 +5299,9 @@ class App:
         lf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         pb = FlowFrame(lf)
         pb.pack(side="bottom", fill="x", pady=(4, 0))
-        for text, cmd in [("Install plugin (.zip)...", self._plugin_install), ("Enable / disable", self._plugin_toggle),
-                          ("Edit config", self._plugin_config), ("Open folder", self._plugin_folder),
+        for text, cmd in [("Install plugin (.zip)...", self._plugin_install),
+                          ("Plugins folder", lambda: self._api_open("plugins")), ("Enable / disable", self._plugin_toggle),
+                          ("Edit config", self._plugin_config), ("Selected plugin's folder", self._plugin_folder),
                           ("Reload now", self._plugin_reload), ("Remove", self._plugin_remove),
                           ("Refresh", self._refresh_plugins)]:
             pb.add(ttk.Button(pb, text=text, command=cmd))
@@ -5441,7 +5442,9 @@ class App:
         if s:
             path = asaapi_paths(s)[key]
             if not os.path.exists(path):
-                messagebox.showinfo(APP_NAME, f"Doesn't exist yet:\n{path}\n\n(Start the server with AsaApi once.)")
+                tip = ("Install AsaApi first with the button above." if key == "plugins"
+                       else "Start the server with AsaApi once.")
+                messagebox.showinfo(APP_NAME, f"Doesn't exist yet:\n{path}\n\n({tip})")
                 return
             open_path(path)
 
