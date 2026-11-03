@@ -1,6 +1,25 @@
-# Tamer — Tame your server
+<p align="center"><img src="tamer.png" width="96" alt="Tamer logo"></p>
 
-**Tamer** is a Windows desktop app for running one or more **ARK: Survival Ascended** dedicated servers, including clusters.
+<h1 align="center">Tamer — Tame your server</h1>
+
+<p align="center">A free Windows app for running <b>ARK: Survival Ascended</b> dedicated servers and clusters, without the command lines and batch files.</p>
+
+<p align="center"><a href="https://github.com/adam32885/Tamer/releases/latest"><b>⬇ Download Tamer for Windows</b></a> &nbsp;·&nbsp; <a href="CHANGELOG.md">What's new</a> &nbsp;·&nbsp; <a href="https://ko-fi.com/tamerarkmanager">☕ Support Tamer</a></p>
+
+![Tamer's main window, with three servers](docs/screenshots/main.png)
+
+## Features at a glance
+- **Install and update** ARK servers through SteamCMD, with a first-run welcome that sets up your first server for you.
+- **Start, stop and restart** with in-game countdown warnings, **crash auto-restart**, and **scheduled restarts**.
+- **Mods** from CurseForge: search, install, set the load order, use passive mods, and **auto-restart for mod updates**, waiting for an empty server if you like.
+- **Clusters** for character and dino transfers between maps, and **copy settings** from one server to others.
+- **Backups** on a timer, with a second copy on another drive or the cloud.
+- **Game settings** form plus full INI editors, and a **command line** builder.
+- **AsaApi plugins:** install AsaApi and plugins in one click.
+- **Discord alerts**, timed in-game messages, a **troubleshooter** that reads the logs for you, connectivity checks, and performance graphs.
+- **Runs in the background** (tray and Windows service), with light and dark themes, and **updates itself**.
+
+<p align="center"><img src="docs/screenshots/mods.png" width="49%" alt="Mods tab"> <img src="docs/screenshots/welcome_2.png" width="40%" alt="The first-run welcome"></p>
 
 *Tamer is an unofficial tool. It isn't affiliated with or endorsed by Studio Wildcard.*
 
@@ -11,7 +30,7 @@ Run **`Tamer-Setup-<version>.exe`**. It installs Tamer just for you, with no adm
 - **Windows says "Windows protected your PC"?** The installer isn't code-signed yet. Click **More info**, then **Run anyway**.
 - **Updating:** Tamer checks for new versions once a day. When one is out, a green **⬆ Update to x.y.z** link appears in the top-right corner. Click it to see what's new, then choose **Download and install**: Tamer downloads the new installer, closes and updates itself, keeps all your settings, servers and backups, and your ARK servers keep running. **Help > Check for Tamer updates now** checks straight away, and **File > Settings > General** can switch the daily check off. You can also download any version from the [releases page](https://github.com/adam32885/Tamer/releases) and run it over the top.
 - **Uninstalling:** go to **Settings > Apps > Tamer > Uninstall**, or use **Uninstall Tamer** in the Start menu. Only the program is removed. Your settings, logs, backups and servers are kept; the uninstaller tells you where, and you can delete that folder yourself.
-- **Where servers go:** new servers install inside Tamer's folder by default (about 13 GB each). You can pick another drive with the **Install folder** on the Server tab.
+- **First run:** a short welcome sets up your first server. It picks where to keep your servers (it suggests the drive with the most free space, such as `D:\ARK Servers`), plus the name, map, players and ports, and can start the install, about 13 GB. New servers go in the same folder. **Help > Run the welcome again** sets up another server. You can still change any server's **Install folder** on the Server tab.
 
 To run from source instead, see below.
 
@@ -40,6 +59,7 @@ Tamer keeps everything next to itself:
 **Building the installer:** run `build_installer.bat`. It needs PyInstaller and Inno Setup 6 (`winget install JRSoftware.InnoSetup`). It builds `dist\Tamer.exe`, then `installer\Output\Tamer-Setup-<version>.exe`, using the version in `tamer.py`.
 
 ## First server in 5 steps
+The welcome does steps 1 and 2 for you the first time Tamer opens.
 1. Open the **Server** tab. Set a server name and map, check the ports, and click **Save server settings**.
 2. Click **Install**. SteamCMD downloads and installs the server (app 2430930). The first install takes a while, and you can watch progress in **Log** tab.
 3. Click **Open firewall port** and approve the admin prompt. On your router, forward the **game port (UDP)** to this PC. Do **not** forward the RCON port.

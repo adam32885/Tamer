@@ -57,8 +57,8 @@ A Windows desktop app for running ARK: Survival Ascended dedicated servers, incl
 - To test it, install silently into a temp folder (`/VERYSILENT /DIR=... /TASKS=...`), then run `unins000.exe /VERYSILENT`.
 
 **Releasing (for Tamer's update check):**
-1. Bump `APP_VERSION`, then run `build_installer.bat`.
-2. On https://github.com/adam32885/Tamer/releases, create a release tagged `v<version>`, with what's new in the notes.
+1. Bump `APP_VERSION`, add a section for it at the top of `CHANGELOG.md` (plain words, newest first; every user-facing change goes there), then run `build_installer.bat`.
+2. On https://github.com/adam32885/Tamer/releases, create a release tagged `v<version>`, and paste that version's CHANGELOG section as the notes. Tamer's update window shows them.
 3. Attach `Tamer-Setup-<version>.exe`.
 
 Tamer (`tamer_latest`) reads the latest release, compares its tag with `APP_VERSION`, and offers the attached installer. It offers "Download and install" only to the installer's copy, i.e. when `unins000.exe` sits next to `Tamer.exe`. Other copies get the release page. `ASM_TAMER_API` overrides the address for tests.

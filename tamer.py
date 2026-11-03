@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.16.0"
+APP_VERSION = "1.17.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -1066,9 +1066,39 @@ def ini_merge_keep(source: str, target: str) -> str:
     return merged
 
 
+def servers_root(cfg) -> str:
+    """Where new servers go: the folder picked in the welcome, else "servers" next to Tamer."""
+    return cfg.data.get("servers_dir") or os.path.join(BASE_DIR, "servers")
+
+
+def roomiest_drive():
+    """(suggested servers folder, free GB) on the fixed drive with the most free space."""
+    best = (os.path.expanduser("~"), 0.0)
+    if IS_WINDOWS:
+        import ctypes
+        k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        mask = k32.GetLogicalDrives()
+        for i in range(26):
+            root = f"{chr(65 + i)}:\\"
+            if mask >> i & 1 and k32.GetDriveTypeW(root) == 3:  # DRIVE_FIXED: no USB sticks, DVDs or network drives
+                try:
+                    free = shutil.disk_usage(root).free / 1024 ** 3
+                except OSError:
+                    continue
+                if free > best[1]:
+                    best = (os.path.join(root, "ARK Servers"), free)
+    else:
+        try:
+            best = (os.path.join(best[0], "ARK Servers"), shutil.disk_usage(best[0]).free / 1024 ** 3)
+        except OSError:
+            pass
+    return best
+
+
 class AppConfig:
     def __init__(self, path: str = CONFIG_PATH):
         self.path = path
+        self.first_run = not os.path.exists(path)  # no settings yet: the window shows the welcome
         self.data = {
             "steamcmd_dir": os.path.join(BASE_DIR, "steamcmd"),
             "backup_root": os.path.join(BASE_DIR, "backups"),
@@ -1090,6 +1120,7 @@ class AppConfig:
             "discord_name": APP_NAME,
             "discord_events": {k: k != "players" for k, _ in DISCORD_EVENTS},
             "tamer_update_check": True,  # look for a newer Tamer on GitHub once a day
+            "servers_dir": "",  # where new servers go ("" = servers next to Tamer); set by the welcome
             "servers": [],
         }
         self.lock = threading.RLock()
@@ -4250,7 +4281,8 @@ def initial_sash(pw, fraction, lo=0, hi=10_000):
     def go(_e=None):
         size = pw.winfo_height() if vertical else pw.winfo_width()
         if size > 50 and pw.winfo_ismapped():  # wait until the window has its real size
-            pw.sashpos(0, int(max(lo, min(hi, size * fraction))))
+            top = hi(size) if callable(hi) else hi  # hi can depend on the size, e.g. to leave room on the other side
+            pw.sashpos(0, int(max(lo, min(top, size * fraction))))
             pw.unbind("<Configure>", bind_id)
 
     bind_id = pw.bind("<Configure>", go, add="+")
@@ -4397,6 +4429,8 @@ class App:
         root.after(15000, self._watch_system_theme)
         root.after(150, self._pump)
         root.after(20000, self._tamer_update_tick)
+        if self.cfg.first_run:
+            root.after(600, self._welcome)
         self.mgr.start_monitor()
 
     # ---- look & feel -------------------------------------------------------------
@@ -4479,6 +4513,173 @@ class App:
         win.configure(background=self.colors["bg"])
         recolor_tk_widgets(win, self.colors)
         set_dark_titlebar(win, self.theme_mode == "dark")
+
+    # ---- first-run welcome ---------------------------------------------------------
+    def _welcome(self):
+        """Step-by-step setup of a first server. The very first time it fills in the starting server; run again
+        from the Help menu it adds a new one, so it never changes a server someone already set up."""
+        if getattr(self, "welcome_win", None) is not None and self.welcome_win.winfo_exists():
+            self.welcome_win.lift()
+            return
+        fresh = self.cfg.first_run and len(self.cfg.servers) == 1 and not self.mgr.is_installed(self.cfg.servers[0])
+        self.cfg.first_run = False
+        target = self.cfg.servers[0] if fresh else default_server(len(self.cfg.servers) + 1, self.cfg.servers)
+        d = self.welcome_win = tk.Toplevel(self.root)
+        d.title("Welcome to Tamer")
+        d.transient(self.root)
+        d.resizable(False, False)
+        body = ttk.Frame(d, padding=(18, 14))
+        body.pack(fill="both", expand=True)
+        folder = tk.StringVar(value=self.cfg.data.get("servers_dir") or roomiest_drive()[0])
+        name = tk.StringVar(value="My ARK Server" if fresh else target["session_name"])
+        map_labels = [m[0] for m in MAPS]
+        map_var = tk.StringVar(value=MAP_LABELS.get(target["map"], map_labels[0]))
+        players = tk.StringVar(value=str(target["max_players"]))
+        join_pw = tk.StringVar(value="")
+        port = tk.StringVar(value=str(target["port"]))
+        rcon = tk.StringVar(value=str(target["rcon_port"]))
+        install = tk.BooleanVar(value=True)
+        pages, step = [], [0]
+
+        def page(title, intro):
+            f = ttk.Frame(body)
+            f.columnconfigure(1, weight=1)
+            ttk.Label(f, text=title, style="Header.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+            ttk.Label(f, text=intro, style="Hint.TLabel", wraplength=520, justify="left").grid(
+                row=1, column=0, columnspan=3, sticky="w", pady=(2, 12))
+            pages.append(f)
+            return f
+
+        def field(f, row, label, var, width=40, **kw):
+            ttk.Label(f, text=label).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 12))
+            e = ttk.Entry(f, textvariable=var, width=width, **kw)
+            e.grid(row=row, column=1, sticky="w", pady=4)
+            return e
+
+        page("Welcome to Tamer", "Tamer installs, runs and looks after ARK: Survival Ascended dedicated servers: "
+                                 "updates, backups, mods, crash restarts and more.\n\nThis sets up your first server in "
+                                 "four short steps. You can change everything later, or click Skip.")
+        f = page("Where to keep your servers", "Each ARK server takes about 13 GB. Tamer picked the drive with the "
+                                               "most free space; new servers go in this folder too.")
+        field(f, 2, "Servers folder", folder, width=46)
+        ttk.Button(f, text="Browse...", command=lambda: self._browse_dir(folder)).grid(row=2, column=2, padx=6)
+        space = ttk.Label(f, text="", style="Hint.TLabel")
+        space.grid(row=3, column=1, columnspan=2, sticky="w")
+
+        def show_space(*_):
+            p = os.path.abspath(folder.get().strip() or ".")
+            while p and not os.path.exists(p) and os.path.dirname(p) != p:
+                p = os.path.dirname(p)
+            try:
+                free = shutil.disk_usage(p).free / 1024 ** 3
+            except OSError:
+                space.configure(text="", style="Hint.TLabel")
+                return
+            low = free < 20
+            space.configure(text=f"{free:.0f} GB free there" + (" - that's tight for an ARK server (about 13 GB "
+                                                                 "plus saves and updates)" if low else ""),
+                            style="Warn.TLabel" if low else "Hint.TLabel")
+        folder.trace_add("write", show_space)
+        show_space()
+        f = page("Your server", "The name is what players see in the server list.")
+        field(f, 2, "Server name", name)
+        ttk.Label(f, text="Map").grid(row=3, column=0, sticky="w", pady=4)
+        ttk.Combobox(f, textvariable=map_var, values=map_labels, state="readonly", width=24).grid(
+            row=3, column=1, sticky="w", pady=4)
+        field(f, 4, "Max players", players, width=8)
+        field(f, 5, "Join password", join_pw, width=24)
+        ttk.Label(f, text="Leave the join password blank for a public server. An admin password is made for you "
+                          "(it's on the Server tab).", style="Hint.TLabel", wraplength=520, justify="left").grid(
+            row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        f = page("Ports", "These defaults are fine for one server; Tamer picks free ones for the next.")
+        field(f, 2, "Game port (UDP)", port, width=8)
+        field(f, 3, "RCON port (TCP)", rcon, width=8)
+        ttk.Label(f, text="For friends outside your home to join, forward the game port (UDP) on your router to "
+                          "this PC. Don't forward the RCON port. 'Check connectivity' on the main window tests it "
+                          "for you later.", style="Hint.TLabel", wraplength=520, justify="left").grid(
+            row=4, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        f = page("All set", "")
+        summary = ttk.Label(f, text="", justify="left")
+        summary.grid(row=2, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(f, text="Install the server now (downloads about 13 GB - the Log tab shows progress)",
+                        variable=install).grid(row=3, column=0, columnspan=3, sticky="w", pady=(12, 0))
+
+        def problem():
+            """What's wrong on the current page, or ""."""
+            if step[0] == 1:
+                p = folder.get().strip()
+                if not p or not os.path.isabs(p):
+                    return "Pick a full folder path, like D:\\ARK Servers."
+            elif step[0] == 2:
+                if not name.get().strip():
+                    return "Give the server a name."
+                if not players.get().strip().isdigit() or not 1 <= int(players.get()) <= 255:
+                    return "Max players should be a number from 1 to 255."
+            elif step[0] == 3:
+                ports = [port.get().strip(), rcon.get().strip()]
+                if not all(x.isdigit() and 1 <= int(x) <= 65535 for x in ports):
+                    return "Ports are numbers from 1 to 65535."
+                if ports[0] == ports[1]:
+                    return "The game port and the RCON port must be different."
+            return ""
+
+        nav = ttk.Frame(d, padding=(18, 0, 18, 14))
+        nav.pack(fill="x")
+        b_skip = ttk.Button(nav, text="Skip", command=d.destroy)
+        b_skip.pack(side="left")
+        b_next = ttk.Button(nav, text="Next", style="Accent.TButton")
+        b_next.pack(side="right")
+        b_back = ttk.Button(nav, text="Back")
+        b_back.pack(side="right", padx=6)
+
+        def show(i):
+            step[0] = i
+            for p in pages:
+                p.pack_forget()
+            pages[i].pack(fill="both", expand=True)
+            b_back.configure(state="normal" if i else "disabled")
+            b_next.configure(text="Finish" if i == len(pages) - 1 else "Next")
+            if i == len(pages) - 1:
+                summary.configure(text=f"Server: {name.get().strip()}\nMap: {map_var.get()}\n"
+                                       f"Folder: {os.path.join(folder.get().strip(), safe_name(name.get().strip()))}\n"
+                                       f"Ports: game {port.get().strip()}, RCON {rcon.get().strip()}")
+
+        def nxt():
+            err = problem()
+            if err:
+                messagebox.showerror(APP_NAME, err, parent=d)
+                return
+            if step[0] < len(pages) - 1:
+                show(step[0] + 1)
+                return
+            root_dir, nm = folder.get().strip(), name.get().strip()
+            try:
+                os.makedirs(root_dir, exist_ok=True)
+            except OSError as e:
+                messagebox.showerror(APP_NAME, f"Couldn't create {root_dir}:\n{e}\n\nPick another folder.", parent=d)
+                show(1)
+                return
+            target.update(name=nm, session_name=nm, map=dict((m[0], m[1]) for m in MAPS)[map_var.get()],
+                          max_players=int(players.get()), server_password=join_pw.get().strip(),
+                          port=int(port.get()), rcon_port=int(rcon.get()),
+                          install_dir=os.path.join(root_dir, safe_name(nm)))
+            self.cfg.data["servers_dir"] = root_dir
+            if target not in self.cfg.servers:
+                self.cfg.servers.append(target)
+            self.cfg.save()
+            d.destroy()
+            self.sel = None
+            self._refresh_server_list()
+            self.tree.selection_set(target["id"])
+            self._on_select()
+            if install.get():
+                self._update()
+
+        b_next.configure(command=nxt)
+        b_back.configure(command=lambda: show(step[0] - 1))
+        show(0)
+        self.themed_window(d)
+        d.grab_set()
 
     # ---- Tamer's own updates ------------------------------------------------------
     def _tamer_update_tick(self):
@@ -4598,6 +4799,7 @@ class App:
                       f"Data folder: {DATA_DIR}"))
         hm.add_command(label="Support Tamer on Ko-fi", command=lambda: webbrowser.open(KOFI_URL))
         hm.add_command(label="Check for Tamer updates now", command=lambda: self._tamer_update_check(manual=True))
+        hm.add_command(label="Run the welcome again (set up a server)...", command=self._welcome)
         mb["Help"]["menu"] = hm
         # top-right corner: a small link to the Ko-fi page
         kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
@@ -4624,15 +4826,20 @@ class App:
         # left: server list
         left = ttk.Frame(pw)
         pw.add(left, weight=0)
-        # Column widths come from the text, so they still fit when Windows display scaling makes it bigger,
-        # and the list starts wide enough to show all of them (up to 45% of the window; the divider still drags)
+        # Column widths come from the text, so they still fit when Windows display scaling makes it bigger.
+        # The list starts wide enough to show them all, but leaves the tab names on the right room to show in
+        # full; when both don't fit, Name and Map give way (Status and Players keep their size). The divider drags.
         font = tkfont.nametofont("TkDefaultFont")
         name_w = font.measure("Server 10") + 12 + 30  # + the status dot
         map_w = font.measure("The Island") + 16
         status_w = max(font.measure(t) for t in ["Status", *self.colors["status"]]) + 16
         players_w = font.measure("Players") + 16
         self.server_cols_w = name_w + map_w + status_w + players_w
-        initial_sash(pw, 0.45, lo=230, hi=self.server_cols_w + 24)
+
+        def list_width(size):
+            tabs_w = sum(font.measure(self.nb.tab(t, "text")) + 26 for t in self.nb.tabs()) + 40
+            return min(self.server_cols_w + 24, size - tabs_w)
+        initial_sash(pw, 0.45, lo=230, hi=list_width)
         ttk.Label(left, text="Servers", style="Title.TLabel").pack(anchor="w")
         cols = ("map", "status", "players")
         self.tree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="browse", height=4,
@@ -6720,13 +6927,14 @@ class App:
             return
         n = len(self.cfg.servers) + 1
         s = default_server(n, self.cfg.servers)
+        s["install_dir"] = os.path.join(servers_root(self.cfg), safe_name(s["name"]))
         if base:
             keep = {k: v for k, v in base.items() if k not in ("id", "name", "install_dir", "port", "rcon_port",
                                                               "session_name", "autostart")}
             s.update(keep)
             s["name"] = base["name"] + " copy"
             s["session_name"] = base["session_name"] + " 2"
-            s["install_dir"] = os.path.join(BASE_DIR, "servers", safe_name(s["name"]))
+            s["install_dir"] = os.path.join(servers_root(self.cfg), safe_name(s["name"]))
         self.cfg.servers.append(s)
         self.cfg.save()
         self._refresh_server_list()
