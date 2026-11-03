@@ -38,6 +38,22 @@ assert found["cluster_id"] == "abc" and found["cluster_dir"] == "D:\\cluster dir
 assert not any("No map" in n or "Map taken" in n for n in notes), "the launch line's map wins over the saves"
 print("launch line: everything picked up")
 
+# ---------- quoting the way Windows reads it (CommandLineToArgvW rules) ----------
+assert am.split_cmdline(r'a "b c" d\"e "f\\" g\\\"h "" i""j "k ""l"" m"') == \
+    ["a", "b c", 'd"e', "f\\", 'g\\"h', "", "ij", 'k "l" m'], am.split_cmdline(r'a "b c" d\"e "f\\" g\\\"h "" i""j "k ""l"" m"')
+# values wrapped in escaped quotes, as some launchers write them - this left \JAG...\ and \TheIsland_WP\ behind
+esc = (f'"{exe}" "\\"TheIsland_WP\\"?listen?SessionName=\\"JAG(Just A Game) The Island\\"?Port=7777?RCONPort=27020?'
+       'ServerAdminPassword=\\"pw word\\"" -mods=1,2 -ClusterDirOverride="D:\\My Cluster" -clusterid=jag -culture="en"')
+q, qf, _ = am.import_server(cfg, cmdline=esc)
+assert (q["map"], q["session_name"], q["name"], q["admin_password"], q["port"], q["mods"], q["culture"]) == \
+    ("TheIsland_WP", "JAG(Just A Game) The Island", "JAG(Just A Game) The Island", "pw word", 7777, "1,2", "en"), q
+assert qf["cluster_dir"] == "D:\\My Cluster" and "\\" not in q["session_name"] + q["map"], qf
+q, _f, _n = am.import_server(cfg, cmdline=f'"{exe}" TheIsland_WP?listen?SessionName="Quoted Plain"?Port=7778 -NoBattlEye')
+assert q["session_name"] == "Quoted Plain" and q["map"] == "TheIsland_WP" and q["port"] == 7778, q
+q, _f, _n = am.import_server(cfg, cmdline=f'"{exe}" "TheIsland_WP?listen?SessionName=He said \\"hi\\"!"')
+assert q["session_name"] == 'He said "hi"!', q["session_name"]  # quotes inside a name are kept
+print("escaped quotes: no stray backslashes, names with brackets and spaces kept")
+
 # ---------- round trip: Tamer's own launch line for the import says the same things ----------
 m = am.Manager(cfg, lambda *a: None)
 again, _f, _n = am.import_server(am.AppConfig(os.path.join(tmp, "c2.json")), cmdline=m.to_cmdline(m.build_command(s)))

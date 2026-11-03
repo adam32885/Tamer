@@ -61,4 +61,9 @@ A Windows desktop app for running ARK: Survival Ascended dedicated servers, incl
 2. On https://github.com/adam32885/Tamer/releases, create a release tagged `v<version>`, and paste that version's CHANGELOG section as the notes. Tamer's update window shows them.
 3. Attach `Tamer-Setup-<version>.exe`.
 
+**The PyInstaller environment trap:** a onefile `Tamer.exe` puts `_PYI_*` variables in its environment, and anything it starts inherits them. If that chain reaches another `Tamer.exe` (installer, then "Open Tamer now"), the new one looks for the old one's unpacked files and fails with "Failed to load Python DLL ... _MEIxxxx". So:
+- start such programs with `env=clean_child_env()`;
+- the installer clears the variables itself in `installer/clean_env.iss`;
+- `test_installer_env` covers both.
+
 Tamer (`tamer_latest`) reads the latest release, compares its tag with `APP_VERSION`, and offers the attached installer. It offers "Download and install" only to the installer's copy, i.e. when `unins000.exe` sits next to `Tamer.exe`. Other copies get the release page. `ASM_TAMER_API` overrides the address for tests.

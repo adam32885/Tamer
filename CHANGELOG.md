@@ -2,6 +2,11 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.18.1
+- Fixed: after **Download and install**, the newly installed Tamer could fail to open with "Failed to load Python DLL". The update itself always worked, and opening Tamer from the Start menu was fine. Now it opens by itself, even when updating from an older version.
+- Fixed: ARK's log window was hidden for servers that don't use AsaApi too (such as imported ones), which left them with no window at all. Now it's only hidden for servers started with AsaApi. A window that's already hidden comes back by itself.
+- Fixed: importing a server whose launch line wraps values in escaped quotes (`\"`) left stray backslashes in its name and map, such as `\TheIsland_WP\`. Tamer now reads launch lines exactly the way Windows does.
+
 ## 1.18.0
 - **Import an existing server:** File > Import existing server brings in a server you set up by hand, with a .bat file or with another manager. Pick it while it's running, pick its .bat file, or just its folder. Tamer reads the map, name, ports, passwords, mods (in order, including passive mods), cluster, flags and options, shows you a preview first, and keeps every INI setting and save, because the server stays in its own folder. The welcome links to it too.
 

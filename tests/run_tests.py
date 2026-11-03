@@ -19,7 +19,7 @@ APP_FILES = ("tamer.py", "ark_manager.py", "tamer.ico", "tamer.png")
 SHOTS = os.path.join(tempfile.gettempdir(), "tamer_shots")
 
 # Logic and GUI tests: run anywhere.
-PORTABLE = ["test_core", "test_urls", "test_import", "test_bm", "test_cfkey", "test_mods",
+PORTABLE = ["test_core", "test_urls", "test_import", "test_installer_env", "test_bm", "test_cfkey", "test_mods",
             "gui_dark", "gui_tasks", "gui_perf", "gui_diag", "gui_f4", "gui_updall", "gui_cmdline",
             "gui_plugins", "gui_passive", "gui_cfkey", "gui_copy", "gui_scroll", "gui_kofi", "gui_update", "gui_welcome", "gui_import", ("gui_small", "1100", "700", "1.25")]
 # These start a pretend ArkAscendedServer.exe. On Windows that's a real exe built by fakes.py, which needs

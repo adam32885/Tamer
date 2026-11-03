@@ -77,7 +77,7 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 - **Install / Update / Validate** through SteamCMD. The header shows the installed build, the latest build, and *UPDATE AVAILABLE* when there's a new one.
 - **Stop** saves the world (`SaveWorld`) and exits cleanly (`DoExit`) over RCON. If players are online, it can count down with in-game warnings first.
 - **Crash auto-restart**: after 5 crashes in 30 minutes it pauses and asks you to check `ShooterGame.log`.
-- **Hide ARK's log window** (Server tab > Behaviour, on by default): the "ASA ... | Process ... | Mem ..." window ARK opens for each server is hidden. The server log is on Tamer's Log tab, and the AsaApi window still shows. Untick it to bring the window back, even while the server is running.
+- **Hide ARK's log window when using AsaApi** (Server tab > Behaviour, on by default): for servers started with AsaApi, the "ASA ... | Process ... | Mem ..." window ARK opens is hidden, so only the AsaApi window shows. Servers without AsaApi always keep ARK's window, so every server has one window. The server log is also on Tamer's Log tab. Untick the box to bring the window back, even while the server is running.
 - **Scheduled restarts**: set daily times like `04:00, 16:00`. Players are warned at the minutes you choose, and the game can optionally update during the restart.
 - **Auto-update on release**: optionally restarts with warnings when Wildcard pushes a new server build.
 - **Game settings**: a form for common rates and rules (XP, taming, harvest, breeding, PvE, MOTD…) plus full raw editors for `GameUserSettings.ini` and `Game.ini`. Leave a form field blank to use ARK's default. Each save keeps a `.bak` copy.

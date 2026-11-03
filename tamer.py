@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.18.0"
+APP_VERSION = "1.18.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -246,10 +246,11 @@ def pid_alive(pid) -> bool:
         return False
 
 
-def ark_log_windows(pids) -> list:
-    """Visible top-level windows of these processes that are ARK's own log window: Unreal's console, window class
-    "FConsoleWindow", titled "Server Console (ArkAscendedServer) - <path>" (the "ASA 96.9 | ..." line is drawn
-    inside it). AsaApi's window is a normal Windows console ("ConsoleWindowClass"), so it's left alone."""
+def ark_log_windows(pids, hidden=False) -> list:
+    """Visible (or, with hidden=True, hidden) top-level windows of these processes that are ARK's own log window:
+    Unreal's console, window class "FConsoleWindow", titled "Server Console (ArkAscendedServer) - <path>" (the
+    "ASA 96.9 | ..." line is drawn inside it). AsaApi's window is a normal Windows console ("ConsoleWindowClass"),
+    so it's left alone."""
     if not IS_WINDOWS:
         return []
     import ctypes
@@ -261,7 +262,7 @@ def ark_log_windows(pids) -> list:
     def each(hwnd, _):
         pid = wintypes.DWORD()
         u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value in pids and u.IsWindowVisible(hwnd):
+        if pid.value in pids and bool(u.IsWindowVisible(hwnd)) != hidden:
             cls = ctypes.create_unicode_buffer(256)
             u.GetClassNameW(hwnd, cls, 256)
             if cls.value == "FConsoleWindow":
@@ -269,6 +270,12 @@ def ark_log_windows(pids) -> list:
         return True
     u.EnumWindows(each, 0)
     return found
+
+
+def hide_ark_log(s) -> bool:
+    """Hide this server's ARK log window? Only when it runs through AsaApi, whose own window then stays, so there's
+    always one window for the server."""
+    return bool(s.get("hide_log_window", True) and s.get("asaapi"))
 
 
 def show_window(hwnd, show: bool) -> bool:
@@ -1079,8 +1086,51 @@ SERVER_EXE_NAMES = ("arkascendedserver.exe", "asaapiloader.exe")
 
 
 def split_cmdline(line: str) -> list:
-    """Split a Windows command line on spaces outside "quotes", dropping the quotes (-Key="a b" -> -Key=a b)."""
-    return [t.replace('"', "") for t in re.findall(r'(?:[^\s"]+|"[^"]*"?)+', line.strip())]
+    """Split a Windows command line the way Windows programs do (CommandLineToArgvW rules): spaces outside "quotes"
+    separate arguments, the quotes themselves go, and \\" is a literal quote (2n backslashes + " = n backslashes and
+    a quote that opens/closes; 2n+1 = n backslashes and a literal quote). Some launchers write the map line as
+    "\\"TheIsland_WP\\"?SessionName=\\"My Server\\"...", which is why the values can still carry quotes."""
+    args, cur, quoted, have, i = [], [], False, False, 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\":
+            n = 0
+            while i < len(line) and line[i] == "\\":
+                n, i = n + 1, i + 1
+            if i < len(line) and line[i] == '"':
+                cur.append("\\" * (n // 2))
+                if n % 2:
+                    cur.append('"')  # escaped: a real quote character
+                else:
+                    quoted = not quoted
+                i += 1
+            else:
+                cur.append("\\" * n)
+            have = True
+            continue
+        if ch == '"':
+            if quoted and line[i + 1:i + 2] == '"':  # "" inside quotes is a literal quote
+                cur.append('"')
+                i += 2
+                continue
+            quoted, have = not quoted, True
+        elif ch in " \t" and not quoted:
+            if have:
+                args.append("".join(cur))
+                cur, have = [], False
+        else:
+            cur.append(ch)
+            have = True
+        i += 1
+    if have:
+        args.append("".join(cur))
+    return args
+
+
+def unquote(value: str) -> str:
+    """A value with the quotes around it taken off: "My Server" -> My Server (quotes inside are kept)."""
+    v = value.strip()
+    return v[1:-1] if len(v) >= 2 and v[0] == v[-1] == '"' else v
 
 
 def server_root_of(path: str):
@@ -1105,17 +1155,17 @@ def parse_server_cmdline(line):
     found, s = {}, {}
     if at is None:
         return s, found
-    found["exe"] = args[at]
-    found["asaapi"] = os.path.basename(args[at]).lower() == "asaapiloader.exe"
+    found["exe"] = unquote(args[at])
+    found["asaapi"] = os.path.basename(found["exe"]).lower() == "asaapiloader.exe"
     rest = args[at + 1:]
     known_flags = {f.lower(): f for _g, items in CMD_FLAG_GROUPS for f, _l, _h in items}
     extra_opts, extra_args, flags = [], [], []
     if rest and not rest[0].startswith("-"):
-        parts = rest.pop(0).split("?")
-        s["map"] = parts[0]
+        parts = rest.pop(0).split("?")  # each part loses its own quotes below (the whole line's ends aren't a pair)
+        s["map"] = unquote(parts[0])
         for p in parts[1:]:
             k, _, v = p.partition("=")
-            key = k.strip().lower()
+            key, v = k.strip().lower(), unquote(v)
             if key in IMPORT_MAP_KEYS and v:
                 s[IMPORT_MAP_KEYS[key]] = v
             elif key not in IMPORT_MAP_DROP and p.strip():
@@ -1123,7 +1173,7 @@ def parse_server_cmdline(line):
     s["battleye"] = True  # ASA runs BattlEye unless told -NoBattlEye
     for a in rest:
         k, eq, v = a.partition("=")
-        key = k.lower()
+        key, v = k.lower(), unquote(v)
         if key == "-nobattleye":
             s["battleye"] = False
         elif key == "-port" and v and "port" not in s:
@@ -1729,7 +1779,7 @@ class Manager:
         rt.online_since_start = False
         rt.hidden_windows = []
         self.log(s, f"Process started (PID {rt.pid}). The map can take several minutes to load.")
-        if IS_WINDOWS and s.get("hide_log_window", True):
+        if IS_WINDOWS and hide_ark_log(s):
             threading.Thread(target=self._hide_log_window_soon, args=(s, rt.pid), daemon=True).start()
         if s.get("upnp"):
             threading.Thread(target=self._upnp_refresh, args=(s,), daemon=True).start()
@@ -2648,15 +2698,19 @@ class Manager:
             self._log_window_locked(s, rt, running)
 
     def _log_window_locked(self, s, rt, running):
-        if not s.get("hide_log_window", True):
-            for hwnd in rt.hidden_windows:
-                show_window(hwnd, True)
-            rt.hidden_windows = []
-            return
         if not running:
             rt.hidden_windows = []
             return
-        for hwnd in ark_log_windows([rt.pid, rt.stats_pid]):
+        pids = [rt.pid, rt.stats_pid]
+        if not hide_ark_log(s):
+            # Show it again - including one hidden before Tamer last restarted, which it no longer remembers
+            back = [h for h in set(rt.hidden_windows) | set(ark_log_windows(pids, hidden=True)) if show_window(h, True)]
+            if back:
+                self.log(s, "Showing ARK's log window: Tamer only hides it for servers started with AsaApi "
+                            "(so there's always one window).")
+            rt.hidden_windows = []
+            return
+        for hwnd in ark_log_windows(pids):
             if show_window(hwnd, False) and hwnd not in rt.hidden_windows:
                 rt.hidden_windows.append(hwnd)
                 self.log(s, "Hid ARK's log window (setting on the Server tab). The server log is on the Log tab.")
@@ -3426,6 +3480,15 @@ def plain_notes(text: str) -> str:
     text = re.sub(r"(\*\*|__|`)", "", text)
     text = re.sub(r"^#+\s*", "", text, flags=re.M)  # headings
     return re.sub(r"^\s*[-*]\s+", "• ", text, flags=re.M)  # bullets
+
+
+def clean_child_env() -> dict:
+    """This process's environment without the PyInstaller bookkeeping (_PYI_*, _MEIPASS*), for starting a program
+    that may itself start Tamer.exe. Left in, they make the next Tamer.exe look for this one's unpacked files, which
+    are gone once this copy exits: "Failed to load Python DLL ... _MEIxxxx\\python3xx.dll"."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("_PYI_", "_MEIPASS"))}
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"  # PyInstaller 6.9+: the next one starts fresh whatever it inherits
+    return env
 
 
 def tamer_installed_copy() -> bool:
@@ -4551,8 +4614,8 @@ SERVER_FIELDS = [
     ("Behaviour", "autostart", "Start when the manager opens", "bool", ""),
     ("Behaviour", "update_on_start", "Update before every start", "bool", ""),
     ("Behaviour", "auto_restart_on_crash", "Auto-restart if it crashes", "bool", ""),
-    ("Behaviour", "hide_log_window", "Hide ARK's log window", "bool",
-     "The server log is on the Log tab. The AsaApi window still shows"),
+    ("Behaviour", "hide_log_window", "Hide ARK's log window when using AsaApi", "bool",
+     "Only the AsaApi window shows. Without AsaApi, ARK's window always stays"),
 ]
 EVENT_CHOICES = ["", "WinterWonderland", "FearEvolved", "TurkeyTrial", "Summer", "Easter", "vday", "Birthday",
                  "Anniversary"]
@@ -5102,7 +5165,7 @@ class App:
 
             def run():
                 try:
-                    subprocess.Popen([target], close_fds=True)
+                    subprocess.Popen([target], close_fds=True, env=clean_child_env())  # it opens the new Tamer at the end
                 except OSError as e:
                     messagebox.showerror(APP_NAME, f"Couldn't start the installer ({e}). It's saved as:\n{target}")
                     return

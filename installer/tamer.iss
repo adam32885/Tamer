@@ -47,6 +47,14 @@ Name: "{autodesktop}\Tamer"; Filename: "{app}\Tamer.exe"; WorkingDir: "{app}"; T
 Filename: "{app}\Tamer.exe"; Description: "Open Tamer now"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+#include "clean_env.iss"
+
+function InitializeSetup: Boolean;
+begin
+  ForgetOldTamer;  // before anything starts Tamer.exe again (see clean_env.iss)
+  Result := True;
+end;
+
 // The same startup entry Tamer's own "Start with Windows" setting writes (see set_start_with_windows in
 // tamer.py), so the tick box here and the one inside Tamer stay in agreement.
 function StartupBat: String;
