@@ -22,18 +22,22 @@ SHOTS = os.path.join(tempfile.gettempdir(), "tamer_shots")
 PORTABLE = ["test_core", "test_urls", "test_bm", "test_cfkey", "test_mods",
             "gui_dark", "gui_tasks", "gui_perf", "gui_diag", "gui_f4", "gui_updall", "gui_cmdline",
             "gui_plugins", "gui_passive", "gui_cfkey", ("gui_small", "1100", "700", "1.25")]
-# These start fake_ark_server.py renamed to ArkAscendedServer.exe, which only works on Linux/macOS.
-# On Windows they need a real stand-in .exe (e.g. fake_ark_server.py built with PyInstaller).
-PROCESS = ["test_cmdline", "test_crash_countdown", "test_automation", "test_diag_net",
-           "test_update_all", "test_f4", "test_asaapi"]
+# These start a pretend ArkAscendedServer.exe. On Windows that's a real exe built by fakes.py, which needs
+# PyInstaller (pip install pyinstaller). Tamer itself doesn't.
+PROCESS =["test_cmdline", "test_crash_countdown", "test_automation", "test_diag_net",
+           "test_update_all", "test_f4", "test_asaapi", "test_mod_wait"]
 SLOW = ["test_tasks_service"]  # ~4 minutes
 
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    plan = PORTABLE + ([] if os.name == "nt" else PROCESS) + (SLOW if "--all" in sys.argv and os.name != "nt" else [])
+    plan = PORTABLE + PROCESS + (SLOW if "--all" in sys.argv and os.name != "nt" else [])
     if args:
         plan = [t for t in plan if (t[0] if isinstance(t, tuple) else t) in args] or args
+    if any(t in PROCESS or t in SLOW for t in plan):
+        sys.path.insert(0, HERE)
+        import fakes
+        fakes.ensure_built()  # up front, so a slow build can't use up one test's time limit
     os.makedirs(SHOTS, exist_ok=True)
     results = []
     for t in plan:
@@ -59,7 +63,7 @@ def main():
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} passed" + (f" - failed: {', '.join(failed)}" if failed else ""))
     if os.name == "nt" and not args:
-        print("(Process tests skipped on Windows - see the note in run_tests.py.)")
+        print("(test_tasks_service isn't run on Windows yet.)")
     sys.exit(1 if failed else 0)
 
 

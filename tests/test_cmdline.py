@@ -1,6 +1,6 @@
 import json, os, shutil, sys, tempfile, time
 sys.path.insert(0, sys.argv[1]); os.environ["FAKE_ARK_LOG"] = __import__("os").path.join(__import__("tempfile").gettempdir(), "fk_cmd.log")
-import tamer as am
+import tamer as am, fakes
 tmp = tempfile.mkdtemp()
 # old profile without the new keys still gets the game log flag
 p = os.path.join(tmp, "c.json"); json.dump({"servers": [{"id": "abc123", "name": "Old"}]}, open(p, "w"))
@@ -25,11 +25,11 @@ s["multihome_rcon"] = False
 print("command ok")
 # CPU priority + cores on a real process
 s.update(install_dir=os.path.join(tmp, "srv"), rcon_port=29701, port=28101, extra_args="", cpu_priority="Below normal", cpu_cores=[0])
-exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL); os.makedirs(os.path.dirname(exe)); shutil.copy("fake_ark_server.py", exe); os.chmod(exe, 0o755)
+exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL); os.makedirs(os.path.dirname(exe)); fakes.install_server(exe)
 m._start(s); pid = m.runtime(s["id"]).pid; time.sleep(1)
-print("nice", os.getpriority(os.PRIO_PROCESS, pid), "cores", os.sched_getaffinity(pid))
-assert os.getpriority(os.PRIO_PROCESS, pid) == 10 and os.sched_getaffinity(pid) == {0}
+below, cores = fakes.cpu_settings(pid); print("below normal", below, "cores", cores)
+assert below and cores == {0}
 s.update(cpu_priority="Normal", cpu_cores=[]); m.apply_cpu(s, force=True)
-assert os.getpriority(os.PRIO_PROCESS, pid) == 0 and len(os.sched_getaffinity(pid)) == (os.cpu_count() or 1)
+below, cores = fakes.cpu_settings(pid); assert not below and len(cores) == min(os.cpu_count() or 1, 64)
 print(am.describe_cores([0, 1, 2, 5]), "|", am.describe_cores([]))
 m._stop(s, graceful=False); print("cpu ok"); print("ALL OK")

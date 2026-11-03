@@ -75,6 +75,9 @@ Tamer keeps everything next to itself:
 When a server comes online, Tamer records which version of each mod it loaded. Every 30 minutes by default (the interval is in Settings), it asks CurseForge whether any of those mods has a newer file.
 - If **Restart automatically when an installed mod updates** is on (Automation tab), the server restarts with your usual player warnings. The new mod version downloads during startup.
 - If it's off, you get a "MOD UPDATE" notice in the header and a Discord alert instead.
+- To avoid interrupting players, also turn on **Wait until the server is empty before a mod update restart**. Tamer then waits until nobody is online and restarts without warnings. If the server is still busy after **Longest wait for an empty server** (2 hours by default, 0 = no limit), it restarts anyway with your usual warnings. The header and Discord show that it's waiting.
+- If Tamer can't get the player list, it keeps waiting rather than guessing the server is empty.
+- Tamer keeps waiting only while it stays open. If it closes during a wait, the update is applied at the next restart.
 - To check right away, use **File > Check for mod updates now**.
 
 ## Performance monitoring

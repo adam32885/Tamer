@@ -1,7 +1,7 @@
 import os, shutil, sys, tempfile, time
 sys.path.insert(0, sys.argv[1]); os.environ["FAKE_ARK_LOG"] = __import__("os").path.join(__import__("tempfile").gettempdir(), "fk_f4.log")
 if os.path.exists(__import__("os").path.join(__import__("tempfile").gettempdir(), "fk_f4.log")): os.remove(__import__("os").path.join(__import__("tempfile").gettempdir(), "fk_f4.log"))
-import tamer as am
+import tamer as am, fakes
 # ---- staggered times + event arg
 assert am.staggered_times("04:00, 16:00", 25) == "04:25, 16:25"
 assert am.staggered_times("23:50", 20) == "00:10"
@@ -13,7 +13,7 @@ for i in range(3):
     s.update(install_dir=os.path.join(tmp, f"srv{i}"), port=27900 + i * 2, rcon_port=29600 + i, backup_interval_min=0)
     cfg.servers.append(s)
     exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL); os.makedirs(os.path.dirname(exe))
-    shutil.copy("fake_ark_server.py", exe); os.chmod(exe, 0o755)
+    fakes.install_server(exe)
 s1, s2, s3 = cfg.servers
 s1["active_event"] = "WinterWonderland"
 m = am.Manager(cfg, lambda *a: None)

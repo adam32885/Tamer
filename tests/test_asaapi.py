@@ -1,5 +1,6 @@
 import json, os, shutil, signal, sys, tempfile, threading, time, zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import fakes
 sys.path.insert(0, sys.argv[1]); os.environ["FAKE_ARK_LOG"] = __import__("os").path.join(__import__("tempfile").gettempdir(), "fk_api.log")
 tmp = tempfile.mkdtemp()
 def mkzip(path, files):
@@ -7,7 +8,7 @@ def mkzip(path, files):
         for n, data in files.items(): z.writestr(n, data)
     return path
 release = mkzip(os.path.join(tmp, "AsaApi_1.21.zip"), {
-    "AsaApi_1.21/AsaApiLoader.exe": open("fake_loader.py").read(), "AsaApi_1.21/ArkApi/AsaApi.dll": "api",
+    "AsaApi_1.21/AsaApiLoader.exe": fakes.loader_bytes(), "AsaApi_1.21/ArkApi/AsaApi.dll": "api",
     "AsaApi_1.21/config.json": '{"settings": {"new": 1}}', "AsaApi_1.21/ArkApi/Plugins/Permissions/Permissions.dll": "perm",
     "AsaApi_1.21/ArkApi/Plugins/Permissions/config.json": '{"default": 1}', "AsaApi_1.21/msdia140.dll": "x"})
 class H(BaseHTTPRequestHandler):
@@ -28,7 +29,7 @@ cfg = am.AppConfig(os.path.join(tmp, "c.json")); cfg.data.update(update_check_mi
 s = cfg.servers[0]; s.update(install_dir=os.path.join(tmp, "srv"), rcon_port=29801, port=28201, backup_interval_min=0)
 p = am.asaapi_paths(s)
 exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL); os.makedirs(os.path.dirname(exe))
-shutil.copy("fake_ark_server.py", exe); os.chmod(exe, 0o755)
+fakes.install_server(exe)
 assert am.asaapi_status(s)["installed"] is False
 # ---- install, user edits, reinstall keeps them, remove keeps plugins
 am.asaapi_install_zip(s, release, "1.21")
@@ -41,7 +42,7 @@ assert open(os.path.join(p["plugins"], "Permissions", "config.json")).read() == 
 assert am.asaapi_status(s)["version"] == "1.22"
 am.asaapi_remove(s)
 assert not am.asaapi_status(s)["installed"] and os.path.isfile(p["config"]) and os.path.isdir(os.path.join(p["plugins"], "Permissions"))
-am.asaapi_install_zip(s, release, "1.21"); os.chmod(p["loader"], 0o755)
+am.asaapi_install_zip(s, release, "1.21")
 print("asaapi install/update/remove ok")
 # ---- plugins: folder layout, loose layout, update keeps config, enable/disable
 shop = mkzip(os.path.join(tmp, "Shop.zip"), {"ArkShop/ArkShop.dll": "s", "ArkShop/config.json": '{"a":1}',
@@ -67,11 +68,13 @@ end = time.time() + 40
 while time.time() < end and not (rt.online and rt.stats_pid): time.sleep(0.5)
 print("loader pid", rt.pid, "server pid", rt.stats_pid, "online", rt.online)
 assert rt.online and rt.stats_pid and rt.stats_pid != rt.pid
-assert os.getpriority(os.PRIO_PROCESS, rt.stats_pid) == 10, "CPU settings go to the real server, not the loader"
+assert fakes.cpu_settings(rt.stats_pid)[0], "CPU settings go to the real server, not the loader"
 assert any("Starting with AsaApi" in l and "AsaApiLoader.exe" in l for l in rt.log)
-time.sleep(6); assert rt.ram and rt.ram > 50 * 1024 ** 2, f"monitoring tracks the real server ({rt.ram})"
+end = time.time() + 30
+while time.time() < end and not (rt.ram and rt.ram > 50 * 1024 ** 2): time.sleep(0.5)  # the fake grows after 8s
+assert rt.ram and rt.ram > 50 * 1024 ** 2, f"monitoring tracks the real server ({rt.ram}, stats pid {rt.stats_pid})\n" + "\n".join(rt.log)
 loader = rt.pid
-os.kill(rt.stats_pid, signal.SIGKILL)  # server crashes -> loader exits -> crash restart
+fakes.crash(rt.stats_pid)  # server crashes -> loader exits -> crash restart
 end = time.time() + 40
 while time.time() < end and not (rt.online and rt.pid != loader): time.sleep(0.5)
 assert rt.online and rt.pid != loader and any("exited unexpectedly" in l for l in rt.log)

@@ -28,7 +28,7 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{srv.server_address[1]}"
 os.environ["ASM_CF_BASE"] = base + "/v1"
 sys.path.insert(0, sys.argv[1])
-import tamer as am
+import tamer as am, fakes
 
 tmp = tempfile.mkdtemp()
 cfg = am.AppConfig(os.path.join(tmp, "cfg.json"))
@@ -39,8 +39,7 @@ s.update(install_dir=os.path.join(tmp, "srv"), rcon_port=29123, mods="900001,900
          ram_restart_gb=0.1, restart_warn_minutes="", backup_interval_min=0)
 exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL)
 os.makedirs(os.path.dirname(exe))
-shutil.copy(os.path.join(os.path.dirname(__file__), "fake_ark_server.py"), exe)
-os.chmod(exe, 0o755)
+fakes.install_server(exe)
 m = am.Manager(cfg, lambda *a: None)
 rt = m.runtime(s["id"])
 

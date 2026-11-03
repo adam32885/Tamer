@@ -9,7 +9,9 @@ log = open(os.environ.get("FAKE_ARK_LOG", __import__("os").path.join(__import__(
 log.write(f"started {os.getpid()} args={sys.argv[1:]}\n"); log.flush()
 start = time.time()
 hog = []
-gamelog_path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "..", "..", "Saved", "Logs", "ShooterGame.log")
+frozen = getattr(sys, "frozen", False)  # the Windows test exe (see fakes.py)
+gamelog_path = os.path.join(os.path.dirname(os.path.abspath(sys.executable if frozen else sys.argv[0])),
+                            "..", "..", "Saved", "Logs", "ShooterGame.log")
 os.makedirs(os.path.dirname(gamelog_path), exist_ok=True)
 gamelog = open(gamelog_path, "w")
 gamelog.write("[2026.11.02-10.00.00:000][  0]Log file open\n"); gamelog.flush()
@@ -20,6 +22,8 @@ if os.environ.get("FAKE_ARK_CRASH"):
 stop = threading.Event()
 
 def players():
+    if os.path.exists(os.environ.get("FAKE_ARK_EMPTY", "")):  # this file existing means everyone has left
+        return "No Players Connected\n"
     t = time.time() - start
     ps = ["0. Bob, 0002aaaa"]
     if t > 14:
@@ -68,7 +72,8 @@ def serve():
 
 threading.Thread(target=serve, daemon=True).start()
 gport = int(re.search(r"Port=(\d+)", url.split("RCONPort")[0]).group(1))
-udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); udp.bind(("0.0.0.0", gport))  # the game port
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # the game port; local only on Windows, to avoid firewall popups
+udp.bind(("127.0.0.1" if frozen else "0.0.0.0", gport))
 while not stop.is_set():
     if time.time() - start > 8 and len(hog) < 3:
         hog.append(bytearray(os.urandom(1)) * (60 * 1024 * 1024))  # ~180 MB total -> trips a 0.1 GB limit

@@ -58,7 +58,7 @@ threading.Thread(target=ssdp_loop, daemon=True).start()
 os.environ.update(ASM_SSDP_ADDR=f"127.0.0.1:{ssdp.getsockname()[1]}", ASM_IPIFY_URL=base + "/ipify", ASM_BM_URL=base + "/bm",
                   FAKE_ARK_LOG=__import__("os").path.join(__import__("tempfile").gettempdir(), "fk2.log"))
 sys.path.insert(0, sys.argv[1])
-import tamer as am
+import tamer as am, fakes
 
 tmp = tempfile.mkdtemp()
 cfg = am.AppConfig(os.path.join(tmp, "c.json"))
@@ -81,7 +81,9 @@ open(os.path.join(arks, "TheIsland_WP.ark"), "w").write("BROKEN")
 m._restore(s, lst[0], False)
 assert open(os.path.join(arks, "TheIsland_WP.ark")).read() == "W1"
 try:
-    m._update(s)                                     # pre-update backup happens before SteamCMD (which fails on Linux)
+    def no_steamcmd(s): raise RuntimeError("no SteamCMD in tests")  # never download the real one
+    m.ensure_steamcmd = no_steamcmd
+    m._update(s)                                     # pre-update backup happens before SteamCMD
 except RuntimeError:
     pass
 assert any("pre-update" in p for p in m.list_backups(s)), m.list_backups(s)
@@ -91,7 +93,7 @@ print("backups ok")
 f = am.diagnose_server(m, s)
 assert f[0]["title"] == "The server isn't installed"
 exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL); os.makedirs(os.path.dirname(exe))
-shutil.copy("fake_ark_server.py", exe); os.chmod(exe, 0o755)
+fakes.install_server(exe)
 blocker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); blocker.bind(("0.0.0.0", 27777))
 f = am.diagnose_server(m, s); titles = [x["title"] for x in f]
 assert "The game port 27777 (UDP) is already in use" in titles, titles

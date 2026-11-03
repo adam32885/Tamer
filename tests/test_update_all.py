@@ -1,6 +1,6 @@
 import os, shutil, sys, tempfile, threading, time
 sys.path.insert(0, sys.argv[1]); os.environ["FAKE_ARK_LOG"] = __import__("os").path.join(__import__("tempfile").gettempdir(), "fk_ua.log")
-import tamer as am
+import tamer as am, fakes
 tmp = tempfile.mkdtemp()
 cfg = am.AppConfig(os.path.join(tmp, "c.json")); cfg.data.update(update_check_min=0, mod_check_min=0)
 cfg.servers.clear()
@@ -10,7 +10,7 @@ for i in range(3):
              restart_warn_minutes="1")
     cfg.servers.append(s)
     exe = os.path.join(s["install_dir"], am.SERVER_EXE_REL); os.makedirs(os.path.dirname(exe))
-    shutil.copy("fake_ark_server.py", exe); os.chmod(exe, 0o755)
+    fakes.install_server(exe)
     os.makedirs(os.path.join(s["install_dir"], "steamapps"))
     open(os.path.join(s["install_dir"], "steamapps", f"appmanifest_{am.ASA_APP_ID}.acf"), "w").write(
         '"AppState"\n{\n "buildid" "%s"\n}\n' % ("200" if i == 2 else "100"))

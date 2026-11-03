@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.11.4"
+APP_VERSION = "1.12.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -974,6 +974,8 @@ def default_server(index: int, existing: list) -> dict:
         "backup_interval_min": 60,
         "backup_keep": 48,
         "auto_mod_update_restart": False,
+        "mod_restart_wait_empty": False,
+        "mod_restart_wait_minutes": 120,
         "ram_restart_gb": 0,
         "discord_notify": True,
         "timed_tasks": [],
@@ -1128,6 +1130,8 @@ class ServerRuntime:
         self.history = collections.deque(maxlen=720)  # (time, cpu %, ram bytes) every 5 s = 1 hour
         self.mod_files = None  # {mod id: file id} as loaded at server start
         self.mods_outdated = []
+        self.mod_wait_since = None  # waiting for an empty server before a mod update restart
+        self.mod_wait_names = ""
         self.queued = False
         self.auto_public_ip = ""
         self.stats_pid = None  # the real ArkAscendedServer.exe when started through AsaApiLoader
@@ -1427,6 +1431,7 @@ class Manager:
         rt.announced_online = rt.players_ready = False
         rt.player_ids = {}
         rt.mod_files, rt.mods_outdated = None, []
+        rt.mod_wait_since = None  # the new process loads the new mods, so there's nothing left to wait for
         rt.last_cpu, rt.ram_over = None, 0
         rt.history.clear()
         rt.task_last = {}
@@ -2217,6 +2222,8 @@ class Manager:
             self._sample_resources(s, rt, running, now)
             if running and rt.online and not rt.busy:
                 self._run_due_tasks(s, rt, now)
+            if running and rt.mod_wait_since is not None:
+                self._mod_wait_check(s, rt)
 
             if rt.busy:
                 rt.state = rt.busy
@@ -2377,6 +2384,38 @@ class Manager:
         else:
             rt.ram_over = 0
 
+    def _mod_update_restart(self, s, rt, names, warn) -> bool:
+        warns = []
+        if warn:
+            try:
+                warns = parse_minutes(s.get("restart_warn_minutes", ""))
+            except ValueError:
+                pass
+        rt.restart_target = dt.datetime.now()
+        if not self.run_op(s, "Mod update restart", self.op_restart, False, warns, None, f"Mod update: {names}"):
+            rt.restart_target = None
+            return False
+        self.alert(s, "update", "Mod update - restarting", names, "info")
+        return True
+
+    def _mod_wait_check(self, s, rt) -> bool:
+        """Restart for a waiting mod update once the server is empty or the wait runs out. True if it restarted."""
+        if not s.get("auto_mod_update_restart"):  # switched off while waiting: leave it to the user
+            rt.mod_wait_since = None
+            return False
+        if rt.busy or rt.restart_target is not None:
+            return False
+        # rt.online goes False when a player check fails, so an unanswered check never counts as empty
+        empty = rt.online and not rt.players
+        limit = s.get("mod_restart_wait_minutes", 120)
+        too_long = bool(limit) and time.time() - rt.mod_wait_since >= limit * 60
+        if not (empty or too_long or not s.get("mod_restart_wait_empty")):
+            return False
+        if not self._mod_update_restart(s, rt, rt.mod_wait_names, not empty):
+            return False
+        rt.mod_wait_since = None
+        return True
+
     def check_mod_updates(self, only=None, manual=False):
         """Compare each running server's mods with CurseForge; restart or alert when a mod gets a new file."""
         servers = [s for s in self.cfg.servers if (only is None or s is only) and self.mod_ids(s)
@@ -2414,15 +2453,17 @@ class Manager:
             names = ", ".join(mods[i]["name"] for i in changed)
             self.log(s, f"Mod update released: {names}")
             if s.get("auto_mod_update_restart") and not rt.busy and rt.restart_target is None:
-                warns = []
-                try:
-                    warns = parse_minutes(s.get("restart_warn_minutes", ""))
-                except ValueError:
-                    pass
-                self.alert(s, "update", "Mod update - restarting", names, "info")
-                rt.restart_target = dt.datetime.now()
-                if not self.run_op(s, "Mod update restart", self.op_restart, False, warns, None, f"Mod update: {names}"):
-                    rt.restart_target = None
+                if s.get("mod_restart_wait_empty"):
+                    first = rt.mod_wait_since is None
+                    rt.mod_wait_names = f"{rt.mod_wait_names}, {names}" if not first else names
+                    if first:
+                        rt.mod_wait_since = time.time()
+                    if not self._mod_wait_check(s, rt) and first:
+                        self.log(s, "Mod update restart is waiting for the server to be empty.")
+                        self.alert(s, "update", "Mod update - waiting for an empty server",
+                                   f"{names}\nThe server will restart when nobody is online.", "info")
+                else:
+                    self._mod_update_restart(s, rt, names, True)
             else:
                 self.alert(s, "update", "Mod update available", f"{names}\nRestart the server to load it.", "info")
         if manual:
@@ -4079,6 +4120,10 @@ SCHEDULE_FIELDS = [
      "Warns players first"),
     ("Automatic restarts", "auto_mod_update_restart", "Restart automatically when an installed mod updates", "bool",
      "Warns players first; check interval is in File > Settings"),
+    ("Automatic restarts", "mod_restart_wait_empty", "Wait until the server is empty before a mod update restart", "bool",
+     "Restarts as soon as nobody is online"),
+    ("Automatic restarts", "mod_restart_wait_minutes", "Longest wait for an empty server (minutes)", "int",
+     "After this it restarts anyway, with player warnings. 0 = no limit"),
     ("Automatic restarts", "ram_restart_gb", "Restart if memory use goes above (GB)", "text",
      "0 = off. Watch the Performance tab to pick a value"),
     ("Backups", "backup_interval_min", "Auto backup every (minutes)", "int", "0 = off; only while online"),
@@ -5863,7 +5908,8 @@ class App:
             if self.mgr.update_available(s):
                 info += " · UPDATE AVAILABLE"
         if rt.mods_outdated:
-            info += f" · {len(rt.mods_outdated)} MOD UPDATE(S) - restart to apply"
+            info += f" · {len(rt.mods_outdated)} MOD UPDATE(S) - " + (
+                "waiting for an empty server" if rt.mod_wait_since is not None else "restart to apply")
         self.h_info.configure(text=info)
         running = self.mgr.is_running(s)
         busy = bool(rt.busy)
