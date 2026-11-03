@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.17.1"
+APP_VERSION = "1.18.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -1064,6 +1064,192 @@ def ini_merge_keep(source: str, target: str) -> str:
             key, value = line.split("=", 1)
             merged = ini_set(merged, section, key.strip(), value)
     return merged
+
+
+# --------------------------------------------------------------------------------------
+# Importing a server Tamer didn't make: from its launch line (running process or .bat), INI files and saves
+# --------------------------------------------------------------------------------------
+IMPORT_MAP_KEYS = {"sessionname": "session_name", "port": "port", "rconport": "rcon_port", "maxplayers": "max_players",
+                   "serverpassword": "server_password", "serveradminpassword": "admin_password", "multihome": "multihome"}
+IMPORT_MAP_DROP = {"listen", "rconenabled", "queryport"}  # Tamer adds these itself (QueryPort isn't used by ASA)
+IMPORT_FLAG_KEYS = {"-serverplatform": "server_platform", "-culture": "culture", "-publicipforepic": "public_ip",
+                    "-mods": "mods", "-passivemods": "passive_mods", "-activeevent": "active_event"}
+IMPORT_FLAG_DROP = {"-port", "-winlivemaxplayers", "-multihome", "-nobattleye", "-clusterid", "-clusterdiroverride"}
+SERVER_EXE_NAMES = ("arkascendedserver.exe", "asaapiloader.exe")
+
+
+def split_cmdline(line: str) -> list:
+    """Split a Windows command line on spaces outside "quotes", dropping the quotes (-Key="a b" -> -Key=a b)."""
+    return [t.replace('"', "") for t in re.findall(r'(?:[^\s"]+|"[^"]*"?)+', line.strip())]
+
+
+def server_root_of(path: str):
+    """The server's install folder from its exe path or any folder inside it, or None if it isn't one."""
+    p = os.path.normpath(path)
+    if os.path.basename(p).lower() in SERVER_EXE_NAMES:
+        p = os.path.dirname(p)
+    for _ in range(5):
+        if os.path.isfile(os.path.join(p, SERVER_EXE_REL)):
+            return p
+        if os.path.dirname(p) == p:
+            break
+        p = os.path.dirname(p)
+    return None
+
+
+def parse_server_cmdline(line):
+    """Tamer settings from an ARK launch line. Returns (settings, found) where found has "exe", "cluster_id",
+    "cluster_dir", "asaapi" when they're in it. Unknown ?options and -flags are kept as extra options/arguments."""
+    args = split_cmdline(line) if isinstance(line, str) else list(line)
+    at = next((i for i, a in enumerate(args) if os.path.basename(a).lower() in SERVER_EXE_NAMES), None)
+    found, s = {}, {}
+    if at is None:
+        return s, found
+    found["exe"] = args[at]
+    found["asaapi"] = os.path.basename(args[at]).lower() == "asaapiloader.exe"
+    rest = args[at + 1:]
+    known_flags = {f.lower(): f for _g, items in CMD_FLAG_GROUPS for f, _l, _h in items}
+    extra_opts, extra_args, flags = [], [], []
+    if rest and not rest[0].startswith("-"):
+        parts = rest.pop(0).split("?")
+        s["map"] = parts[0]
+        for p in parts[1:]:
+            k, _, v = p.partition("=")
+            key = k.strip().lower()
+            if key in IMPORT_MAP_KEYS and v:
+                s[IMPORT_MAP_KEYS[key]] = v
+            elif key not in IMPORT_MAP_DROP and p.strip():
+                extra_opts.append(p.strip())
+    s["battleye"] = True  # ASA runs BattlEye unless told -NoBattlEye
+    for a in rest:
+        k, eq, v = a.partition("=")
+        key = k.lower()
+        if key == "-nobattleye":
+            s["battleye"] = False
+        elif key == "-port" and v and "port" not in s:
+            s["port"] = v
+        elif key == "-winlivemaxplayers" and v and "max_players" not in s:
+            s["max_players"] = v
+        elif key == "-clusterid":
+            s["cluster"], found["cluster_id"] = True, v
+        elif key == "-clusterdiroverride":
+            found["cluster_dir"] = v
+        elif key in IMPORT_FLAG_KEYS and eq:
+            s[IMPORT_FLAG_KEYS[key]] = v
+        elif key in IMPORT_FLAG_DROP:
+            pass
+        elif not eq and key in known_flags:
+            flags.append(known_flags[key])
+        elif a.startswith("-"):
+            extra_args.append(f'{k}="{v}"' if eq and " " in v else a)
+    for key in ("port", "rcon_port", "max_players"):
+        if key in s:
+            try:
+                s[key] = int(s[key])
+            except ValueError:
+                del s[key]
+    s["cmd_flags"] = flags
+    s["extra_options"] = "?".join(extra_opts)
+    s["extra_args"] = " ".join(extra_args)
+    if "passive_mods" in s:  # Tamer keeps passive mods inside "mods" too
+        mods = [m for m in s.get("mods", "").split(",") if m.strip()]
+        s["mods"] = ",".join(mods + [m for m in s["passive_mods"].split(",") if m.strip() and m not in mods])
+    return s, found
+
+
+def bat_server_line(text: str, bat_dir: str):
+    """The ARK launch line in a .bat file, with ^ line joins, `set` variables, %~dp0 and `cd` worked out."""
+    text = re.sub(r"\^[ \t]*\r*\n", " ", text)  # ^ at the end of a line joins it to the next
+    env, cwd = {"~dp0": bat_dir.rstrip("\\/") + os.sep}, bat_dir
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.lower().startswith(("rem ", "::", "@rem")):
+            continue
+        line = re.sub(r"%([^%\s]+)%", lambda m: env.get(m.group(1), env.get(m.group(1).lower(), m.group(0))), line)
+        line = line.replace("%~dp0", env["~dp0"])
+        m = re.match(r'(?i)^@?set\s+"?([^=\s"]+)=(.*?)"?$', line)
+        if m:
+            env[m.group(1)] = env[m.group(1).lower()] = m.group(2)
+            continue
+        m = re.match(r'(?i)^@?(?:cd|chdir|pushd)\s+(?:/d\s+)?"?([^"]+?)"?$', line)
+        if m:
+            cwd = os.path.join(cwd, m.group(1))
+            continue
+        m = re.search(r'(?i)("[^"]*(?:ArkAscendedServer|AsaApiLoader)\.exe"|\S*(?:ArkAscendedServer|AsaApiLoader)\.exe)', line)
+        if m:
+            exe = m.group(1).strip('"')
+            if not os.path.isabs(exe):
+                exe = os.path.normpath(os.path.join(cwd, exe))
+            return f'"{exe}" ' + line[m.end():].strip()
+    return None
+
+
+def server_from_folder(root: str):
+    """What the server folder itself says: GameUserSettings.ini values, ActiveMods, and the map from its saves."""
+    s, notes = {}, []
+    gus = read_text_file(os.path.join(root, CONFIG_REL, "GameUserSettings.ini"))
+    for section, key, field in (("SessionSettings", "SessionName", "session_name"), ("SessionSettings", "Port", "port"),
+                                ("ServerSettings", "RCONPort", "rcon_port"),
+                                ("ServerSettings", "ServerAdminPassword", "admin_password"),
+                                ("ServerSettings", "ServerPassword", "server_password"),
+                                ("/Script/Engine.GameSession", "MaxPlayers", "max_players"),
+                                ("ServerSettings", "ActiveMods", "mods")):
+        v = ini_get(gus, section, key)
+        if v:
+            s[field] = int(v) if field in ("port", "rcon_port", "max_players") and v.isdigit() else v
+    saves = os.path.join(root, SAVEDARKS_REL)
+    maps = []
+    if os.path.isdir(saves):
+        for d in os.listdir(saves):
+            full = os.path.join(saves, d)
+            arks = [os.path.join(full, f) for f in os.listdir(full) if f.lower().endswith(".ark")] if os.path.isdir(full) else []
+            if arks:
+                maps.append((max(os.path.getmtime(a) for a in arks), d))
+    if maps:
+        s["map"] = max(maps)[1]
+        notes.append(f"Map taken from the saves ({s['map']}).")
+    return s, notes
+
+
+def import_server(cfg, folder=None, cmdline=None, bat=None):
+    """A new Tamer server for an existing ARK server. Pass its folder, its running command line, or a .bat path.
+    Returns (server, found, notes); raises RuntimeError with a plain reason if it can't."""
+    line, notes = cmdline, []
+    if bat:
+        line = bat_server_line(read_text_file(bat), os.path.dirname(os.path.abspath(bat)))
+        if not line:
+            raise RuntimeError("That .bat file doesn't start ArkAscendedServer.exe (or AsaApiLoader.exe).")
+    from_line, found = parse_server_cmdline(line) if line else ({}, {})
+    root = server_root_of(found.get("exe") or folder or "")
+    if not root:
+        raise RuntimeError("Couldn't find the server files (ShooterGame\\Binaries\\Win64\\ArkAscendedServer.exe) "
+                           "there. Pick the server's main folder - the one with ShooterGame inside.")
+    same = next((o for o in cfg.servers if os.path.normcase(os.path.normpath(o["install_dir"])) ==
+                 os.path.normcase(root)), None)
+    if same:
+        raise RuntimeError(f"Tamer already manages that folder, as '{same['name']}'.")
+    from_folder, folder_notes = server_from_folder(root)
+    s = default_server(len(cfg.servers) + 1, cfg.servers)
+    s.update(cmd_flags=[], install_dir=root)
+    s.update(from_folder)
+    s.update(from_line)  # the launch line wins: it's what the server actually runs with
+    if "map" in from_line:
+        folder_notes = [n for n in folder_notes if not n.startswith("Map taken")]
+    if not from_line.get("map") and not from_folder.get("map"):
+        notes.append("No map found - it's set to The Island. Change it on the Server tab if that's wrong.")
+    s["name"] = s.get("session_name") or os.path.basename(root)
+    s["asaapi"] = bool(found.get("asaapi"))
+    if not s["asaapi"] and asaapi_status(s)["installed"]:
+        notes.append("AsaApi is installed in this folder. If the server used plugins, tick 'Start this server with "
+                     "AsaApi' on the Plugins tab.")
+    notes += folder_notes
+    if not line:
+        notes.append("Read from the folder only (no launch line), so command-line options like mods or flags "
+                     "may be missing - pick the running server or its .bat to get them.")
+    clash = next((o for o in cfg.servers if o["port"] == s["port"] or o["rcon_port"] == s["rcon_port"]), None)
+    if clash:
+        notes.append(f"Its ports clash with '{clash['name']}' - change one of them before running both.")
+    return s, found, notes
 
 
 def servers_root(cfg) -> str:
@@ -4564,9 +4750,12 @@ class App:
             e.grid(row=row, column=1, sticky="w", pady=4)
             return e
 
-        page("Welcome to Tamer", "Tamer installs, runs and looks after ARK: Survival Ascended dedicated servers: "
-                                 "updates, backups, mods, crash restarts and more.\n\nThis sets up your first server in "
-                                 "four short steps. You can change everything later, or click Skip.")
+        f = page("Welcome to Tamer", "Tamer installs, runs and looks after ARK: Survival Ascended dedicated servers: "
+                                     "updates, backups, mods, crash restarts and more.\n\nThis sets up your first server "
+                                     "in four short steps. You can change everything later, or click Skip.")
+        ttk.Button(f, text="Already have a server? Import it instead...",
+                   command=lambda: (d.destroy(), self._import_dialog(replace=target if fresh else None))).grid(
+            row=2, column=0, columnspan=3, sticky="w")
         f = page("Where to keep your servers", "Each ARK server takes about 13 GB. Tamer picked the drive with the "
                                                "most free space; new servers go in this folder too.")
         field(f, 2, "Servers folder", folder, width=46)
@@ -4689,6 +4878,164 @@ class App:
         self.themed_window(d)
         d.grab_set()
 
+    # ---- import a server Tamer didn't make -----------------------------------------
+    def _import_dialog(self, replace=None):
+        """replace: the untouched starter server, when this is opened from the first-run welcome."""
+        if getattr(self, "import_win", None) is not None and self.import_win.winfo_exists():
+            self.import_win.lift()
+            return
+        d = self.import_win = tk.Toplevel(self.root)
+        d.title("Import existing server")
+        d.transient(self.root)
+        body = ttk.Frame(d, padding=14)
+        body.pack(fill="both", expand=True)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="Bring a server Tamer didn't set up - made by hand, with a .bat file or with another "
+                             "manager - into Tamer. Its files stay where they are, so all its settings and saves come "
+                             "with it.", style="Hint.TLabel", wraplength=620, justify="left").grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        src = tk.StringVar(value="running")
+        bat_var, dir_var = tk.StringVar(), tk.StringVar()
+        ttk.Radiobutton(body, text="A server that's running now (best - Tamer reads exactly how it was started)",
+                        variable=src, value="running").grid(row=1, column=0, columnspan=3, sticky="w")
+        procs = ttk.Treeview(body, columns=("port", "path"), show="headings", height=4, selectmode="browse")
+        procs.heading("port", text="Port")
+        procs.heading("path", text="Server")
+        procs.column("port", width=70, stretch=False)
+        procs.column("path", width=520)
+        procs.grid(row=2, column=0, columnspan=2, sticky="ew", padx=(22, 0), pady=2)
+        ttk.Button(body, text="Refresh", command=lambda: scan()).grid(row=2, column=2, sticky="n", padx=6, pady=2)
+        ttk.Radiobutton(body, text="Its .bat start file", variable=src, value="bat").grid(
+            row=3, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(body, textvariable=bat_var, width=60).grid(row=3, column=1, sticky="ew", pady=(6, 0))
+        ttk.Button(body, text="Browse...", command=lambda: (bat_var.set(filedialog.askopenfilename(
+            parent=d, title="The server's .bat file", filetypes=[("Batch files", "*.bat *.cmd"), ("All files", "*.*")]))
+            or bat_var.get(), src.set("bat"))).grid(row=3, column=2, padx=6, pady=(6, 0))
+        ttk.Radiobutton(body, text="Just its folder", variable=src, value="folder").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(body, textvariable=dir_var, width=60).grid(row=4, column=1, sticky="ew", pady=4)
+        ttk.Button(body, text="Browse...", command=lambda: (self._browse_dir(dir_var), src.set("folder"))).grid(
+            row=4, column=2, padx=6, pady=4)
+        ttk.Button(body, text="Read its settings", command=lambda: read()).grid(row=5, column=0, sticky="w", pady=(8, 4))
+        ttk.Label(body, text="Name in Tamer").grid(row=6, column=0, sticky="w")
+        name_var = tk.StringVar()
+        ttk.Entry(body, textvariable=name_var, width=40).grid(row=6, column=1, sticky="w")
+        preview = tk.Text(body, height=18, width=88, wrap="word", state="disabled", font="TkDefaultFont")
+        preview.grid(row=7, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        body.rowconfigure(7, weight=1)
+        bb = ttk.Frame(body)
+        bb.grid(row=8, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        b_import = ttk.Button(bb, text="Import", style="Accent.TButton", state="disabled", command=lambda: do_import())
+        b_import.pack(side="right")
+        ttk.Button(bb, text="Cancel", command=d.destroy).pack(side="right", padx=6)
+        lines, result = {}, {}
+
+        def scan():
+            procs.delete(*procs.get_children())
+            procs.insert("", "end", iid="wait", values=("", "Looking for running ARK servers..."))
+
+            def work():
+                managed = {os.path.normcase(os.path.normpath(Manager.exe_path(o))) for o in self.cfg.servers}
+                found = [(pid, path, cmd) for pid, path, cmd in scan_server_processes()
+                         if path and os.path.normcase(os.path.normpath(path)) not in managed]
+
+                def show():
+                    if not d.winfo_exists():
+                        return
+                    procs.delete(*procs.get_children())
+                    lines.clear()
+                    for pid, path, cmd in found:
+                        port = parse_server_cmdline(cmd)[0].get("port", "")
+                        lines[str(pid)] = cmd
+                        procs.insert("", "end", iid=str(pid), values=(port, server_root_of(path) or path))
+                    if not found:
+                        procs.insert("", "end", iid="none", values=("", "No running servers that Tamer isn't "
+                                                                        "already managing."))
+                    elif len(found) == 1:
+                        procs.selection_set(str(found[0][0]))
+                self.q.put(("call", None, show))
+            threading.Thread(target=work, daemon=True).start()
+
+        def read():
+            try:
+                if src.get() == "running":
+                    sel = [i for i in procs.selection() if i in lines]
+                    if not sel:
+                        raise RuntimeError("Pick the running server in the list first.")
+                    s, found, notes = import_server(self.cfg, cmdline=lines[sel[0]])
+                elif src.get() == "bat":
+                    if not os.path.isfile(bat_var.get().strip()):
+                        raise RuntimeError("Pick the server's .bat file first.")
+                    s, found, notes = import_server(self.cfg, bat=bat_var.get().strip())
+                else:
+                    if not os.path.isdir(dir_var.get().strip()):
+                        raise RuntimeError("Pick the server's folder first.")
+                    s, found, notes = import_server(self.cfg, folder=dir_var.get().strip())
+            except RuntimeError as e:
+                messagebox.showerror(APP_NAME, str(e), parent=d)
+                return
+            result.update(s=s, found=found)
+            name_var.set(s["name"])
+            mods = [m for m in s.get("mods", "").split(",") if m.strip()]
+            passive = [m for m in s.get("passive_mods", "").split(",") if m.strip()]
+            rows = [("Folder", s["install_dir"]), ("Map", f"{MAP_LABELS.get(s['map'], s['map'])} ({s['map']})"),
+                    ("Name in the server list", s["session_name"]),
+                    ("Ports", f"game {s['port']}, RCON {s['rcon_port']}"), ("Max players", s["max_players"]),
+                    ("Admin password", "found (hidden)" if s.get("admin_password") else "none - one is made for you"),
+                    ("Join password", "found (hidden)" if s.get("server_password") else "none (public)"),
+                    ("Mods", f"{len(mods)}: {', '.join(mods)}" if mods else "none"),
+                    ("Passive mods", ", ".join(passive) or "none"),
+                    ("Cluster", f"yes (ID {found['cluster_id']})" if found.get("cluster_id") else "no"),
+                    ("AsaApi", "yes" if s.get("asaapi") else "no"), ("BattlEye", "on" if s.get("battleye") else "off"),
+                    ("Flags", " ".join(s.get("cmd_flags", [])) or "none"),
+                    ("Extra ?options", s.get("extra_options") or "none"),
+                    ("Extra -arguments", s.get("extra_args") or "none"),
+                    ("Game settings", "GameUserSettings.ini and Game.ini stay in the folder - see the Game settings tab")]
+            text = "\n".join(f"{k}: {v}" for k, v in rows)
+            if notes:
+                text += "\n\n" + "\n".join(f"⚠ {n}" for n in notes)
+            preview.configure(state="normal")
+            preview.delete("1.0", "end")
+            preview.insert("end", text)
+            preview.configure(state="disabled")
+            b_import.configure(state="normal")
+
+        def do_import():
+            s, found = result["s"], result["found"]
+            s["name"] = name_var.get().strip() or s["name"]
+            cid = found.get("cluster_id")
+            if cid and cid != self.cfg.data["cluster_id"]:
+                others = [o["name"] for o in self.cfg.servers if o.get("cluster")]
+                ans = messagebox.askyesnocancel(
+                    APP_NAME, f"This server uses cluster ID '{cid}', but Tamer's cluster ID is "
+                              f"'{self.cfg.data['cluster_id']}'.\n\nYes = use '{cid}' as Tamer's cluster ID" +
+                              (f" (your other cluster servers - {', '.join(others)} - switch to it too)" if others else "") +
+                              f".\nNo = keep Tamer's, so this server joins Tamer's cluster from its next start.", parent=d)
+                if ans is None:
+                    return
+                if ans:
+                    self.cfg.data["cluster_id"] = cid
+                    if found.get("cluster_dir"):
+                        self.cfg.data["cluster_dir"] = found["cluster_dir"]
+            if replace in self.cfg.servers and not self.mgr.is_installed(replace):
+                self.cfg.servers.remove(replace)  # the welcome's empty starter server isn't needed any more
+            self.cfg.servers.append(s)
+            self.cfg.save()
+            d.destroy()
+            self.sel = None
+            self._refresh_server_list()
+            self.tree.selection_set(s["id"])
+            self._on_select()
+            self.mgr.log(s, f"Imported from {s['install_dir']}.")
+            threading.Thread(target=self.mgr.adopt_processes, daemon=True).start()  # pick it up if it's running
+            messagebox.showinfo(APP_NAME, f"'{s['name']}' is imported. Check its Server and Game settings tabs.\n\n"
+                                          "If it's running, Tamer is watching it now. If another manager was looking "
+                                          "after it, switch that off, so the two don't both restart it.")
+
+        procs.bind("<<TreeviewSelect>>", lambda e: src.set("running"))
+        scan()
+        self.themed_window(d)
+        d.grab_set()
+
     # ---- Tamer's own updates ------------------------------------------------------
     def _tamer_update_tick(self):
         """Look for a newer Tamer soon after opening, then once a day (if the setting is on)."""
@@ -4785,6 +5132,7 @@ class App:
                 self.root.bind(f"<Alt-KeyPress-{key}>", lambda e, b=btn: (self.root.tk.call("tk::MbPost", b), "break")[1])
         fm = tk.Menu(mb["File"], tearoff=False)
         fm.add_command(label="Settings...", command=self._settings_dialog)
+        fm.add_command(label="Import existing server...", command=self._import_dialog)
         fm.add_command(label="Update all servers...", command=self._update_all_dialog)
         fm.add_command(label="Broadcast to all servers...", command=self._broadcast_all)
         fm.add_command(label="Stagger restart times...", command=self._stagger_dialog)

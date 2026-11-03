@@ -13,6 +13,7 @@
 - **Start, stop and restart** with in-game countdown warnings, **crash auto-restart**, and **scheduled restarts**.
 - **Mods** from CurseForge: search, install, set the load order, use passive mods, and **auto-restart for mod updates**, waiting for an empty server if you like.
 - **Clusters** for character and dino transfers between maps, and **copy settings** from one server to others.
+- **Import your existing servers**, whether made by hand, with a .bat file or another manager: Tamer reads their settings, mods and INI files.
 - **Backups** on a timer, with a second copy on another drive or the cloud.
 - **Game settings** form plus full INI editors, and a **command line** builder.
 - **AsaApi plugins:** install AsaApi and plugins in one click.
@@ -212,6 +213,25 @@ Only one server is ever down at once.
 - **Start all, one at a time.** Each server waits for the previous one to come online before it starts, which avoids a big memory and CPU spike. This also applies when Tamer or the background service auto-starts your servers at boot. Servers waiting their turn show **Queued to start**. **Stop all** cancels the queue. You can switch this off in **File > Settings > General**.
 - **Broadcast to all servers** (under the server list, or the File menu). Sends one message to every online server, as an on-screen broadcast and in chat.
 - **Stagger restart times** (**Automation** tab > **Stagger across servers...**, or the File menu). Gives every server the same daily schedule spaced N minutes apart, e.g. 04:00 / 04:10 / 04:20, so the cluster never goes down at once. It shows each server's times before applying. Optionally it also copies the warning times and the update-on-restart setting.
+
+## Import an existing server
+Already running an ASA server you set up by hand, with a `.bat` file, or with another manager? Use **File > Import existing server...** (the welcome has a link to it too). Pick one of these:
+- **A server that's running now.** This is the best option: Tamer reads exactly how it was started.
+- **Its `.bat` start file.** Tamer understands `start "" ...`, lines continued with `^`, `set NAME=value` variables, `%~dp0` and `cd`.
+- **Just its folder.** Tamer reads the INI files, and takes the map from the saves.
+
+Tamer picks up:
+- the map, server name, ports, max players and passwords;
+- mods in their load order, and passive mods;
+- the cluster ID and folder, and the active event;
+- BattlEye, and the launch flags it knows. Any other `?options` and `-arguments` are kept in **Extra ?options** and **Extra -arguments**, so nothing is lost.
+
+Before anything changes, you see a preview, with passwords hidden.
+
+The server's files **stay where they are**. Nothing is copied or moved, so all its `GameUserSettings.ini` and `Game.ini` settings and its saves come with it, and appear on the **Game settings** tab.
+- If its cluster ID differs from Tamer's, Tamer asks which one to use.
+- If it's running, Tamer starts watching it straight away. Switch off any other manager that was restarting it, so the two don't both do it.
+- If AsaApi is installed in its folder, tick **Start this server with AsaApi** on the Plugins tab if it used plugins.
 
 ## Copy to other servers
 Select a server and click **Copy to other servers...** under the server list. Tick the servers to copy to, then what to copy:

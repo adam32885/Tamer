@@ -2,6 +2,9 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.18.0
+- **Import an existing server:** File > Import existing server brings in a server you set up by hand, with a .bat file or with another manager. Pick it while it's running, pick its .bat file, or just its folder. Tamer reads the map, name, ports, passwords, mods (in order, including passive mods), cluster, flags and options, shows you a preview first, and keeps every INI setting and save, because the server stays in its own folder. The welcome links to it too.
+
 ## 1.17.1
 - The update window shows release notes as plain text, without the asterisks and other formatting marks.
 
