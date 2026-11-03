@@ -70,7 +70,21 @@ def serve():
         c, _ = s.accept()
         threading.Thread(target=handle, args=(c,), daemon=True).start()
 
+def windows():
+    """Like the real server: an "ASA ..." log window, plus one other window Tamer must leave alone."""
+    import ctypes, ctypes.wintypes as wt
+    u = ctypes.windll.user32
+    u.CreateWindowExW.restype = wt.HWND
+    u.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD] + [ctypes.c_int] * 4 + [wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
+    for title, x in ((f"ASA 96.9 | Process {os.getpid()} | Mem: 0.5 GB | Booting...", 0), ("Some other window", 420)):
+        u.CreateWindowExW(0, "STATIC", title, 0x10CF0000, x, 0, 400, 200, None, None, None, None)  # visible overlapped
+    msg = wt.MSG()
+    while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
+
 threading.Thread(target=serve, daemon=True).start()
+if os.environ.get("FAKE_ARK_WINDOWS") and os.name == "nt":
+    threading.Thread(target=windows, daemon=True).start()
 gport = int(re.search(r"Port=(\d+)", url.split("RCONPort")[0]).group(1))
 udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)  # the game port; local only on Windows, to avoid firewall popups
 udp.bind(("127.0.0.1" if frozen else "0.0.0.0", gport))

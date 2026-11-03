@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.14.2"
+APP_VERSION = "1.15.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -239,6 +239,43 @@ def pid_alive(pid) -> bool:
         return True
     except OSError:
         return False
+
+
+def ark_log_windows(pids) -> list:
+    """Visible top-level windows of these processes titled "ASA ..." - ARK's own log window
+    ("ASA 96.9 | Process 1234 | Mem: ..."). AsaApi's console window is titled with the exe path, so it's left alone."""
+    if not IS_WINDOWS:
+        return []
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32  # type: ignore[attr-defined]
+    pids, found = {int(p) for p in pids if p}, []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def each(hwnd, _):
+        pid = wintypes.DWORD()
+        u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and u.IsWindowVisible(hwnd):
+            title, cls = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
+            u.GetWindowTextW(hwnd, title, 256)
+            u.GetClassNameW(hwnd, cls, 256)
+            if title.value.startswith("ASA ") and cls.value != "ConsoleWindowClass":
+                found.append(hwnd)
+        return True
+    u.EnumWindows(each, 0)
+    return found
+
+
+def show_window(hwnd, show: bool) -> bool:
+    """Hide or show a window. False if it's gone."""
+    if not IS_WINDOWS:
+        return False
+    import ctypes
+    u = ctypes.windll.user32  # type: ignore[attr-defined]
+    if not u.IsWindow(hwnd):
+        return False
+    u.ShowWindow(hwnd, 5 if show else 0)  # SW_SHOW / SW_HIDE
+    return True
 
 
 def kill_pid(pid):
@@ -967,6 +1004,7 @@ def default_server(index: int, existing: list) -> dict:
         "autostart": False,
         "update_on_start": False,
         "auto_restart_on_crash": True,
+        "hide_log_window": True,
         "restart_times": "",
         "restart_warn_minutes": "15, 10, 5, 1",
         "update_on_scheduled_restart": True,
@@ -1163,6 +1201,7 @@ class ServerRuntime:
         self.queued = False
         self.auto_public_ip = ""
         self.stats_pid = None  # the real ArkAscendedServer.exe when started through AsaApiLoader
+        self.hidden_windows = []  # ARK log windows Tamer hid, so they can be shown again
         self.mod_check_pending = False
         self.task_last = {}  # timed task id -> schedule bookkeeping (epoch)
         self.task_ran = {}  # timed task id -> when it last actually ran
@@ -1175,6 +1214,7 @@ class Manager:
         self.notify = notify  # notify(kind, sid, payload) - must be thread-safe
         self.rt: dict[str, ServerRuntime] = {}
         self.stop_event = threading.Event()
+        self.window_lock = threading.Lock()  # _log_window runs from the tick and from a start's fast check
         self.steam_lock = threading.Lock()
         self.latest_build = None
         self.last_update_check = 0.0
@@ -1464,7 +1504,10 @@ class Manager:
         rt.history.clear()
         rt.task_last = {}
         rt.online_since_start = False
+        rt.hidden_windows = []
         self.log(s, f"Process started (PID {rt.pid}). The map can take several minutes to load.")
+        if IS_WINDOWS and s.get("hide_log_window", True):
+            threading.Thread(target=self._hide_log_window_soon, args=(s, rt.pid), daemon=True).start()
         if s.get("upnp"):
             threading.Thread(target=self._upnp_refresh, args=(s,), daemon=True).start()
         if use_api:
@@ -2248,6 +2291,7 @@ class Manager:
                         threading.Thread(target=self._crash_restart_when_free, args=(s,), daemon=True).start()
 
             self._sample_resources(s, rt, running, now)
+            self._log_window(s, rt, running)
             if running and rt.online and not rt.busy:
                 self._run_due_tasks(s, rt, now)
             if running and rt.mod_wait_since is not None:
@@ -2374,6 +2418,33 @@ class Manager:
             self.log(s, f"UPnP: UDP {s['port']} forwarded to this PC." if res == "OK" else f"UPnP: {res}")
         except Exception as e:
             self.log(s, f"UPnP port forward failed: {e}")
+
+    def _log_window(self, s, rt, running):
+        """Hide ARK's log window while the setting is on; show the ones Tamer hid if it's switched off."""
+        with self.window_lock:
+            self._log_window_locked(s, rt, running)
+
+    def _log_window_locked(self, s, rt, running):
+        if not s.get("hide_log_window", True):
+            for hwnd in rt.hidden_windows:
+                show_window(hwnd, True)
+            rt.hidden_windows = []
+            return
+        if not running:
+            rt.hidden_windows = []
+            return
+        for hwnd in ark_log_windows([rt.pid, rt.stats_pid]):
+            if show_window(hwnd, False) and hwnd not in rt.hidden_windows:
+                rt.hidden_windows.append(hwnd)
+                self.log(s, "Hid ARK's log window (setting on the Server tab). The server log is on the Log tab.")
+
+    def _hide_log_window_soon(self, s, pid):
+        """Right after a start, look often so ARK's log window barely flashes up; the 5 s tick covers the rest."""
+        rt = self.runtime(s["id"])
+        deadline = time.time() + 180
+        while time.time() < deadline and rt.pid == pid and pid_alive(pid) and not self.stop_event.is_set():
+            self._log_window(s, rt, True)
+            time.sleep(0.5)
 
     def _sample_resources(self, s, rt, running, now):
         if not running or not rt.pid:
@@ -4214,6 +4285,8 @@ SERVER_FIELDS = [
     ("Behaviour", "autostart", "Start when the manager opens", "bool", ""),
     ("Behaviour", "update_on_start", "Update before every start", "bool", ""),
     ("Behaviour", "auto_restart_on_crash", "Auto-restart if it crashes", "bool", ""),
+    ("Behaviour", "hide_log_window", "Hide ARK's log window", "bool",
+     "The server log is on the Log tab. The AsaApi window still shows"),
 ]
 EVENT_CHOICES = ["", "WinterWonderland", "FearEvolved", "TurkeyTrial", "Summer", "Easter", "vday", "Birthday",
                  "Anniversary"]

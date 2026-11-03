@@ -25,7 +25,7 @@ PORTABLE = ["test_core", "test_urls", "test_bm", "test_cfkey", "test_mods",
 # These start a pretend ArkAscendedServer.exe. On Windows that's a real exe built by fakes.py, which needs
 # PyInstaller (pip install pyinstaller). Tamer itself doesn't.
 PROCESS =["test_cmdline", "test_crash_countdown", "test_automation", "test_diag_net",
-           "test_update_all", "test_f4", "test_asaapi", "test_mod_wait"]
+           "test_update_all", "test_f4", "test_asaapi", "test_mod_wait", "test_log_window"]
 SLOW = ["test_tasks_service"]  # ~4 minutes
 
 
