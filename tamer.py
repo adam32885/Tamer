@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.13.2"
+APP_VERSION = "1.14.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -3817,7 +3817,8 @@ THEMES = {
     "light": {
         "bg": "#f3f3f3", "bg2": "#e8e8e8", "field": "#ffffff", "fg": "#1f2328", "muted": "#6e7781",
         "border": "#c8ccd1", "button": "#fbfbfb", "button_hover": "#e9eef6", "button_press": "#dbe4f1",
-        "select_bg": "#cfe3ff", "select_fg": "#1f2328", "accent": "#0969da",
+        "select_bg": "#d3efd9", "select_fg": "#1f2328", "accent": "#1a7f37",
+        "primary": "#1f883d", "primary_hover": "#1a7f37", "primary_press": "#116329", "primary_fg": "#ffffff",
         "status": {"Online": "#1a7f37", "Starting": "#9a6700", "Stopped": "#6e7781", "Not installed": "#a40e26",
                    "Queued to start": "#0969da"},
         "busy": "#0969da", "good": "#1a7f37", "warn": "#9a6700", "bad": "#a40e26", "off": "#8c959f",
@@ -3827,7 +3828,8 @@ THEMES = {
     "dark": {
         "bg": "#1f2124", "bg2": "#181a1c", "field": "#2a2d31", "fg": "#e6e8eb", "muted": "#9aa1a9",
         "border": "#3d4249", "button": "#30343a", "button_hover": "#3a3f46", "button_press": "#454b53",
-        "select_bg": "#264f78", "select_fg": "#ffffff", "accent": "#4c8dff",
+        "select_bg": "#1f4a2c", "select_fg": "#ffffff", "accent": "#3fb950",
+        "primary": "#238636", "primary_hover": "#2ea043", "primary_press": "#1a7f37", "primary_fg": "#ffffff",
         "status": {"Online": "#3fb950", "Starting": "#d29922", "Stopped": "#8b949e", "Not installed": "#f85149",
                    "Queued to start": "#58a6ff"},
         "busy": "#58a6ff", "good": "#3fb950", "warn": "#d29922", "bad": "#f85149", "off": "#6e7681",
@@ -3931,79 +3933,107 @@ def mod_mode_images(width, centres, size=18):
 
     lefts = [max(0, min(width - size, round(c - size / 2))) for c in centres]
 
-    def png(first_on):
-        raw = b""
+    def rows(first_on):
         for py in range(size):
             row = bytearray(4 * width)
             for left, on in zip(lefts, (first_on, not first_on)):
                 row[4 * left:4 * (left + size)] = b"".join(pixel(px, py, on) for px in range(size))
-            raw += b"\0" + bytes(row)
+            yield bytes(row)
 
-        def chunk(kind, data):
-            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-        return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, size, 8, 6, 0, 0, 0))
-                + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return tuple(png_image(width, size, rows(on)) for on in (True, False))
 
-    return tuple(tk.PhotoImage(data=base64.b64encode(png(on)), format="png") for on in (True, False))
+
+def png_image(width, height, rows):
+    """A tk image from RGBA pixel rows (bytes, 4 per pixel)."""
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+    raw = b"".join(b"\0" + r for r in rows)
+    data = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+    return tk.PhotoImage(data=base64.b64encode(data), format="png")
+
+
+def dot_image(colour, size=10, gap=6):
+    """A smooth round dot in `colour` ("#rrggbb"), with `gap` empty pixels after it before the text."""
+    rgb = bytes(int(colour[i:i + 2], 16) for i in (1, 3, 5))
+    r = size / 2
+
+    def rows():
+        for py in range(size):
+            row = bytearray(4 * (size + gap))
+            for px in range(size):
+                inside = sum(math.hypot(px + (i + 0.5) / 4 - r, py + (j + 0.5) / 4 - r) <= r
+                             for i in range(4) for j in range(4))
+                if inside:
+                    row[4 * px:4 * px + 4] = rgb + bytes([255 * inside // 16])
+            yield bytes(row)
+    return png_image(size + gap, size, rows())
 
 
 def apply_ttk_theme(root, mode: str) -> dict:
     """Style ttk + classic tk widgets for 'light' or 'dark'. Returns the palette."""
     c = THEMES[mode]
     st = ttk.Style(root)
-    native_light = mode == "light" and "vista" in st.theme_names()
-    st.theme_use("vista" if native_light else "clam")
-    if native_light:  # keep Windows' own light colours; just match their background
-        c = dict(c, bg=st.lookup("TFrame", "background") or c["bg"])
-    if not native_light:
-        st.configure(".", background=c["bg"], foreground=c["fg"], fieldbackground=c["field"],
-                     bordercolor=c["border"], darkcolor=c["bg"], lightcolor=c["bg"], troughcolor=c["bg2"],
-                     focuscolor=c["accent"], selectbackground=c["select_bg"], selectforeground=c["select_fg"],
-                     insertcolor=c["fg"], arrowcolor=c["fg"])
-        st.map(".", foreground=[("disabled", c["muted"])], background=[("disabled", c["bg"])])
-        st.configure("TButton", background=c["button"], bordercolor=c["border"], lightcolor=c["button"],
-                     darkcolor=c["button"], padding=(8, 3))
-        st.map("TButton", background=[("disabled", c["bg"]), ("pressed", c["button_press"]), ("active", c["button_hover"])],
-               lightcolor=[("pressed", c["button_press"]), ("active", c["button_hover"])],
-               darkcolor=[("pressed", c["button_press"]), ("active", c["button_hover"])],
-               foreground=[("disabled", c["muted"])], bordercolor=[("focus", c["accent"])])
-        st.configure("TEntry", fieldbackground=c["field"], foreground=c["fg"], insertcolor=c["fg"],
-                     lightcolor=c["border"], darkcolor=c["border"])
-        st.map("TEntry", fieldbackground=[("disabled", c["bg"]), ("readonly", c["bg2"])],
-               bordercolor=[("focus", c["accent"])], lightcolor=[("focus", c["accent"])])
-        st.configure("TCombobox", fieldbackground=c["field"], background=c["button"], foreground=c["fg"],
-                     arrowcolor=c["fg"], lightcolor=c["border"], darkcolor=c["border"])
-        st.map("TCombobox", fieldbackground=[("readonly", c["field"]), ("disabled", c["bg"])],
-               foreground=[("readonly", c["fg"]), ("disabled", c["muted"])],
-               selectbackground=[("readonly", c["field"])], selectforeground=[("readonly", c["fg"])],
-               background=[("active", c["button_hover"])], bordercolor=[("focus", c["accent"])])
-        st.configure("Treeview", background=c["field"], fieldbackground=c["field"], foreground=c["fg"],
-                     bordercolor=c["border"], lightcolor=c["field"], darkcolor=c["field"])
-        st.map("Treeview", background=[("selected", c["select_bg"])], foreground=[("selected", c["select_fg"])])
-        st.configure("Treeview.Heading", background=c["button"], foreground=c["fg"], bordercolor=c["border"],
-                     lightcolor=c["button"], darkcolor=c["button"], relief="flat")
-        st.map("Treeview.Heading", background=[("active", c["button_hover"])])
-        st.configure("TNotebook", background=c["bg"], bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"])
-        st.configure("TNotebook.Tab", background=c["bg2"], foreground=c["muted"], padding=(10, 4),
-                     bordercolor=c["border"], lightcolor=c["bg2"], darkcolor=c["bg2"])
-        st.map("TNotebook.Tab", background=[("selected", c["bg"]), ("active", c["button_hover"])],
-               foreground=[("selected", c["fg"]), ("active", c["fg"])],
-               lightcolor=[("selected", c["bg"])], darkcolor=[("selected", c["bg"])])
-        st.configure("TLabelframe", background=c["bg"], bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"])
-        st.configure("TLabelframe.Label", background=c["bg"], foreground=c["fg"])
-        for w in ("TCheckbutton", "TRadiobutton"):
-            st.configure(w, background=c["bg"], foreground=c["fg"], indicatorbackground=c["field"],
-                         indicatorforeground=c["fg"], upperbordercolor=c["border"], lowerbordercolor=c["border"])
-            st.map(w, background=[("active", c["bg"])],
-                   indicatorbackground=[("disabled", c["bg"]), ("pressed", c["button_press"]), ("selected", c["field"])],
-                   foreground=[("disabled", c["muted"])])
-        for orient in ("Vertical", "Horizontal"):
-            st.configure(f"{orient}.TScrollbar", background=c["button"], troughcolor=c["bg2"], bordercolor=c["bg2"],
-                         arrowcolor=c["fg"], lightcolor=c["button"], darkcolor=c["button"])
-            st.map(f"{orient}.TScrollbar", background=[("active", c["button_hover"])])
-        st.configure("TPanedwindow", background=c["bg"])
-        st.configure("Sash", background=c["bg"], lightcolor=c["bg"], bordercolor=c["bg"])
-    st.configure("Header.TLabel", font=("Segoe UI", 16, "bold"))
+    st.theme_use("clam")  # both modes: Windows' own "vista" look ignores custom colours
+    st.configure(".", background=c["bg"], foreground=c["fg"], fieldbackground=c["field"],
+                 bordercolor=c["border"], darkcolor=c["bg"], lightcolor=c["bg"], troughcolor=c["bg2"],
+                 focuscolor=c["accent"], selectbackground=c["select_bg"], selectforeground=c["select_fg"],
+                 insertcolor=c["fg"], arrowcolor=c["fg"])
+    st.map(".", foreground=[("disabled", c["muted"])], background=[("disabled", c["bg"])])
+    st.configure("TButton", background=c["button"], bordercolor=c["border"], lightcolor=c["button"],
+                 darkcolor=c["button"], padding=(8, 3))
+    st.map("TButton", background=[("disabled", c["bg"]), ("pressed", c["button_press"]), ("active", c["button_hover"])],
+           lightcolor=[("pressed", c["button_press"]), ("active", c["button_hover"])],
+           darkcolor=[("pressed", c["button_press"]), ("active", c["button_hover"])],
+           foreground=[("disabled", c["muted"])], bordercolor=[("focus", c["accent"])])
+    st.configure("TEntry", fieldbackground=c["field"], foreground=c["fg"], insertcolor=c["fg"],
+                 lightcolor=c["border"], darkcolor=c["border"])
+    st.map("TEntry", fieldbackground=[("disabled", c["bg"]), ("readonly", c["bg2"])],
+           bordercolor=[("focus", c["accent"])], lightcolor=[("focus", c["accent"])])
+    st.configure("TCombobox", fieldbackground=c["field"], background=c["button"], foreground=c["fg"],
+                 arrowcolor=c["fg"], lightcolor=c["border"], darkcolor=c["border"])
+    st.map("TCombobox", fieldbackground=[("readonly", c["field"]), ("disabled", c["bg"])],
+           foreground=[("readonly", c["fg"]), ("disabled", c["muted"])],
+           selectbackground=[("readonly", c["field"])], selectforeground=[("readonly", c["fg"])],
+           background=[("active", c["button_hover"])], bordercolor=[("focus", c["accent"])])
+    st.configure("Treeview", background=c["field"], fieldbackground=c["field"], foreground=c["fg"],
+                 bordercolor=c["border"], lightcolor=c["field"], darkcolor=c["field"])
+    st.map("Treeview", background=[("selected", c["select_bg"])], foreground=[("selected", c["select_fg"])])
+    st.configure("Treeview.Heading", background=c["button"], foreground=c["fg"], bordercolor=c["border"],
+                 lightcolor=c["button"], darkcolor=c["button"], relief="flat")
+    st.map("Treeview.Heading", background=[("active", c["button_hover"])])
+    st.configure("TNotebook", background=c["bg"], bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"])
+    st.configure("TNotebook.Tab", background=c["bg2"], foreground=c["muted"], padding=(10, 4),
+                 bordercolor=c["border"], lightcolor=c["bg2"], darkcolor=c["bg2"])
+    st.map("TNotebook.Tab", background=[("selected", c["bg"]), ("active", c["button_hover"])],
+           foreground=[("selected", c["fg"]), ("active", c["fg"])],
+           lightcolor=[("selected", c["bg"])], darkcolor=[("selected", c["bg"])])
+    st.configure("TLabelframe", background=c["bg"], bordercolor=c["border"], lightcolor=c["bg"], darkcolor=c["bg"])
+    st.configure("TLabelframe.Label", background=c["bg"], foreground=c["fg"])
+    for w in ("TCheckbutton", "TRadiobutton"):
+        st.configure(w, background=c["bg"], foreground=c["fg"], indicatorbackground=c["field"],
+                     indicatorforeground=c["fg"], upperbordercolor=c["border"], lowerbordercolor=c["border"])
+        st.map(w, background=[("active", c["bg"])],
+               indicatorbackground=[("disabled", c["bg"]), ("pressed", c["button_press"]), ("selected", c["field"])],
+               foreground=[("disabled", c["muted"])])
+    for orient in ("Vertical", "Horizontal"):
+        st.configure(f"{orient}.TScrollbar", background=c["button"], troughcolor=c["bg2"], bordercolor=c["bg2"],
+                     arrowcolor=c["fg"], lightcolor=c["button"], darkcolor=c["button"])
+        st.map(f"{orient}.TScrollbar", background=[("active", c["button_hover"])])
+    st.configure("TPanedwindow", background=c["bg"])
+    st.configure("Sash", background=c["bg"], lightcolor=c["bg"], bordercolor=c["bg"])
+    # main actions (Start, Install / Update, Save...): green fill, grey again when they can't be used
+    st.configure("Accent.TButton", background=c["primary"], foreground=c["primary_fg"], bordercolor=c["primary"],
+                 lightcolor=c["primary"], darkcolor=c["primary"])
+    st.map("Accent.TButton",
+           background=[("disabled", c["button"]), ("pressed", c["primary_press"]), ("active", c["primary_hover"])],
+           lightcolor=[("disabled", c["button"]), ("pressed", c["primary_press"]), ("active", c["primary_hover"])],
+           darkcolor=[("disabled", c["button"]), ("pressed", c["primary_press"]), ("active", c["primary_hover"])],
+           bordercolor=[("disabled", c["border"]), ("focus", c["fg"])],
+           foreground=[("disabled", c["muted"])])
+    st.configure("TLabelframe.Label", foreground=c["accent"], font=("Segoe UI", 9, "bold"))
+    st.configure("Title.TLabel", foreground=c["accent"], font=("Segoe UI", 11, "bold"))
+    st.configure("Header.TLabel", foreground=c["accent"], font=("Segoe UI", 16, "bold"))
     st.configure("Status.TLabel", font=("Segoe UI", 11, "bold"))
     st.configure("Hint.TLabel", foreground=c["muted"])
     st.configure("Warn.TLabel", foreground=c["bad"])
@@ -4011,6 +4041,8 @@ def apply_ttk_theme(root, mode: str) -> dict:
     # Installed mods list: no gap for an expand arrow, so the circles line up with their headings
     st.layout("Mods.Treeview", st.layout("Treeview"))
     st.layout("Mods.Treeview.Item", without_indicator(st.layout("Treeview.Item")))
+    st.layout("Servers.Treeview", st.layout("Treeview"))  # same for the status dots in the server list
+    st.layout("Servers.Treeview.Item", without_indicator(st.layout("Treeview.Item")))
     # classic tk widgets (Text, Canvas, dialogs from simpledialog, menus) pick these up when created
     opts = {"*Text.background": c["field"], "*Text.foreground": c["fg"], "*Text.insertBackground": c["fg"],
             "*Text.selectBackground": c["select_bg"], "*Text.selectForeground": c["select_fg"],
@@ -4292,6 +4324,8 @@ class App:
     def _style(self):
         self.theme_mode = self._effective_theme()
         self.colors = apply_ttk_theme(self.root, self.theme_mode)
+        self.status_dots = {state: dot_image(colour, size=12)
+                            for state, colour in {**self.colors["status"], "busy": self.colors["busy"]}.items()}
 
     def apply_theme(self):
         """Switch light/dark at runtime."""
@@ -4302,6 +4336,7 @@ class App:
         for state, color in c["status"].items():
             self.tree.tag_configure(state, foreground=color)
         self.tree.tag_configure("busy", foreground=c["busy"])
+        self._refresh_server_list()  # new dots
         self.mtree.tag_configure("installed", foreground=c["good"])
         self.task_tree.tag_configure("off", foreground=c["off"])
         self.plugin_tree.tag_configure("off", foreground=c["off"])
@@ -4371,9 +4406,10 @@ class App:
         left = ttk.Frame(pw)
         pw.add(left, weight=0)
         initial_sash(pw, 0.26, lo=230, hi=380)
-        ttk.Label(left, text="Servers", font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(left, text="Servers", style="Title.TLabel").pack(anchor="w")
         cols = ("map", "status", "players")
-        self.tree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="browse", height=4)
+        self.tree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="browse", height=4,
+                                 style="Servers.Treeview")
         self.tree.heading("#0", text="Name")
         self.tree.heading("map", text="Map")
         self.tree.heading("status", text="Status")
@@ -4395,7 +4431,8 @@ class App:
         for i, (text, cmd) in enumerate([("Start all", self._start_all), ("Stop all", self._stop_all),
                                          ("Update all", self._update_all_dialog)]):
             b2.columnconfigure(i, weight=1, uniform="allbtn")
-            ttk.Button(b2, text=text, command=cmd, width=1).grid(row=0, column=i, sticky="ew")
+            ttk.Button(b2, text=text, command=cmd, width=1,
+                       style="Accent.TButton" if i == 0 else "TButton").grid(row=0, column=i, sticky="ew")
         ttk.Button(b2, text="Broadcast to all servers...", command=self._broadcast_all).grid(
             row=1, column=0, columnspan=3, sticky="ew", pady=(4, 0))
         ttk.Button(b2, text="Copy to other servers...", command=self._copy_dialog).grid(
@@ -4434,7 +4471,8 @@ class App:
             ("backup", "Backup now", self._backup_now),
             ("kill", "Force kill", self._kill),
         ]:
-            self.btns[key] = tb.add(ttk.Button(tb, text=text, command=cmd))
+            style = "Accent.TButton" if key in ("start", "update") else "TButton"
+            self.btns[key] = tb.add(ttk.Button(tb, text=text, command=cmd, style=style))
         for text, cmd in [("Troubleshoot", self._troubleshoot), ("Check connectivity", self._connectivity),
                           ("Open firewall port", self._firewall),
                           ("Server folder", lambda: self._open_rel("")),
@@ -4507,7 +4545,8 @@ class App:
         self._build_fields(sf.inner, SERVER_FIELDS)
         bar = ttk.Frame(sf.inner)
         bar.pack(fill="x", padx=6, pady=6)
-        ttk.Button(bar, text="Save server settings", command=lambda: self._save_form()).pack(side="left")
+        ttk.Button(bar, text="Save server settings", command=lambda: self._save_form(),
+                   style="Accent.TButton").pack(side="left")
         self.show_pw = tk.BooleanVar()
         ttk.Checkbutton(bar, text="Show passwords", variable=self.show_pw, command=self._toggle_pw).pack(side="left", padx=10)
         ttk.Label(bar, text="Changes apply on the next (re)start.", style="Hint.TLabel").pack(side="left")
@@ -4525,7 +4564,8 @@ class App:
         body = sf.inner
         top = ttk.Frame(body)
         top.pack(fill="x", padx=6, pady=(6, 2))
-        ttk.Button(top, text="Save launch options", command=lambda: self._save_form()).pack(side="right")
+        ttk.Button(top, text="Save launch options", command=lambda: self._save_form(),
+                   style="Accent.TButton").pack(side="right")
         intro = ttk.Label(top, text="Launch options for this server. Ticked options are added to the launch command "
                                     "(preview at the bottom). Changes apply on the next start.",
                           style="Hint.TLabel", wraplength=500, justify="left")
@@ -4745,7 +4785,7 @@ class App:
         self.nb.add(tab, text="Game settings")
         bar = ttk.Frame(tab)
         bar.pack(fill="x", padx=6, pady=6)
-        ttk.Button(bar, text="Save to INI files", command=self._save_ini).pack(side="left")
+        ttk.Button(bar, text="Save to INI files", command=self._save_ini, style="Accent.TButton").pack(side="left")
         ttk.Button(bar, text="Reload from disk", command=self._load_ini).pack(side="left", padx=4)
         self.ini_warn = ttk.Label(bar, text="", style="Warn.TLabel")
         self.ini_warn.pack(side="left", padx=10)
@@ -4836,7 +4876,7 @@ class App:
         self.mtree.configure(yscrollcommand=ms.set)
         mb = FlowFrame(left)
         mb.pack(side="bottom", fill="x", pady=(4, 0))
-        mb.add(ttk.Button(mb, text="Install", command=lambda: self._mod_install(False)))
+        mb.add(ttk.Button(mb, text="Install", command=lambda: self._mod_install(False), style="Accent.TButton"))
         mb.add(ttk.Button(mb, text="Install on cluster", command=lambda: self._mod_install(True)))
         mb.add(ttk.Button(mb, text="Open page", command=lambda: self._mod_open(self.mtree)))
         self.mod_more_btn = mb.add(ttk.Button(mb, text="Load more", command=lambda: self._mod_search(more=True),
@@ -5552,7 +5592,8 @@ class App:
         self._build_fields(top, SCHEDULE_FIELDS)
         bar = ttk.Frame(top)
         bar.pack(fill="x", padx=6, pady=2)
-        ttk.Button(bar, text="Save automation settings", command=lambda: self._save_form()).pack(side="left")
+        ttk.Button(bar, text="Save automation settings", command=lambda: self._save_form(),
+                   style="Accent.TButton").pack(side="left")
         ttk.Button(bar, text="Stagger across servers...", command=self._stagger_dialog).pack(side="left", padx=4)
         self.next_restart_lbl = ttk.Label(bar, text="", style="Hint.TLabel")
         self.next_restart_lbl.pack(side="left", padx=10)
@@ -5972,10 +6013,11 @@ class App:
             tag = "busy" if rt.busy else state
             players = str(len(rt.players)) if rt.online else "–"
             vals = (MAP_LABELS.get(s["map"], s["map"]), state, players)
+            dot = self.status_dots.get(tag, self.status_dots["Stopped"])
             if s["id"] in existing:
-                self.tree.item(s["id"], text=s["name"], values=vals, tags=(tag,))
+                self.tree.item(s["id"], text=s["name"], values=vals, tags=(tag,), image=dot)
             else:
-                self.tree.insert("", "end", iid=s["id"], text=s["name"], values=vals, tags=(tag,))
+                self.tree.insert("", "end", iid=s["id"], text=s["name"], values=vals, tags=(tag,), image=dot)
         for iid in existing - set(ids):
             self.tree.delete(iid)
         for i, iid in enumerate(ids):
@@ -7149,7 +7191,7 @@ class App:
         bb = ttk.Frame(outer)
         bb.pack(fill="x", pady=(10, 0))
         ttk.Button(bb, text="Cancel", command=d.destroy).pack(side="right")
-        ttk.Button(bb, text="Save", command=save).pack(side="right", padx=4)
+        ttk.Button(bb, text="Save", command=save, style="Accent.TButton").pack(side="right", padx=4)
         self.themed_window(d)
 
     # ---- timed messages & commands ----------------------------------------------

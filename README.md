@@ -109,6 +109,11 @@ Without the service, automation only happens while Tamer is open. That covers cr
 ## Appearance
 To switch themes, go to **File > Settings > General > Appearance** and choose **Match Windows** (the default), **Light** or **Dark**. The change applies instantly. With Match Windows, Tamer follows Windows' dark/light app setting automatically. The title bar and the File / Help menu bar follow the theme too. Alt+F and Alt+H open the menus.
 
+Both themes use Tamer's green:
+- The main buttons (**Start**, **Install / Update**, **Start all**, the mod **Install** button and the **Save** buttons) are green. They turn grey when they can't be used right now, for example Start while the server is already running.
+- Each server in the list has a coloured dot: green is Online, yellow is Starting, grey is Stopped, red is Not installed and blue is Queued to start or busy.
+- The server name, the "Servers" title, the section titles and the selected rows are green too.
+
 ## Second backup copy (another drive or the cloud)
 In **File > Settings > General**, set a **Second backup folder**. If OneDrive, Dropbox or Google Drive is installed, a one-click button fills in its folder.
 - Every backup, automatic or manual, is copied there and pruned to the same "Backups to keep" count.
