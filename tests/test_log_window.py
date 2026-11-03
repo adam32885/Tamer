@@ -1,4 +1,4 @@
-"""ARK's "ASA ..." log window gets hidden (plain start and through AsaApi), other windows are left alone,
+"""ARK's log window (Unreal's FConsoleWindow) gets hidden (plain start and through AsaApi), other windows are left alone,
 and unticking the setting shows it again. Windows only: it's about real windows."""
 import ctypes, os, sys, tempfile, time
 if os.name != "nt":
@@ -24,19 +24,22 @@ def wait(cond, timeout, what):
     while time.time() < end:
         if cond(): return
         time.sleep(0.25)
-    print("\n".join(rt.log)); raise SystemExit(f"TIMEOUT waiting for {what}")
+    print("\n".join(rt.log))
+    for pid in (rt.stats_pid, rt.pid):                    # don't leave a pretend server holding the test ports
+        if pid: fakes.crash(pid)
+    raise SystemExit(f"TIMEOUT waiting for {what}")
 
 
 def windows(pid):
-    """{title: visible} for the fake server's two windows."""
+    """{"ASA": visible, "other": visible} for the fake server's log window and its AsaApi-style console."""
     out = {}
     @ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
     def each(h, _):
         p = wt.DWORD(); u.GetWindowThreadProcessId(h, ctypes.byref(p))
         if p.value == pid:
-            t = ctypes.create_unicode_buffer(256); u.GetWindowTextW(h, t, 256)
-            if t.value.startswith("ASA ") or t.value == "Some other window":
-                out["ASA" if t.value.startswith("ASA ") else "other"] = bool(u.IsWindowVisible(h))
+            c = ctypes.create_unicode_buffer(256); u.GetClassNameW(h, c, 256)
+            if c.value in ("FConsoleWindow", "ConsoleWindowClass"):
+                out["ASA" if c.value == "FConsoleWindow" else "other"] = bool(u.IsWindowVisible(h))
         return True
     u.EnumWindows(each, 0)
     return out

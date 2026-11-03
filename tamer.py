@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.15.0"
+APP_VERSION = "1.15.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -242,8 +242,9 @@ def pid_alive(pid) -> bool:
 
 
 def ark_log_windows(pids) -> list:
-    """Visible top-level windows of these processes titled "ASA ..." - ARK's own log window
-    ("ASA 96.9 | Process 1234 | Mem: ..."). AsaApi's console window is titled with the exe path, so it's left alone."""
+    """Visible top-level windows of these processes that are ARK's own log window: Unreal's console, window class
+    "FConsoleWindow", titled "Server Console (ArkAscendedServer) - <path>" (the "ASA 96.9 | ..." line is drawn
+    inside it). AsaApi's window is a normal Windows console ("ConsoleWindowClass"), so it's left alone."""
     if not IS_WINDOWS:
         return []
     import ctypes
@@ -256,10 +257,9 @@ def ark_log_windows(pids) -> list:
         pid = wintypes.DWORD()
         u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if pid.value in pids and u.IsWindowVisible(hwnd):
-            title, cls = ctypes.create_unicode_buffer(256), ctypes.create_unicode_buffer(256)
-            u.GetWindowTextW(hwnd, title, 256)
+            cls = ctypes.create_unicode_buffer(256)
             u.GetClassNameW(hwnd, cls, 256)
-            if title.value.startswith("ASA ") and cls.value != "ConsoleWindowClass":
+            if cls.value == "FConsoleWindow":
                 found.append(hwnd)
         return True
     u.EnumWindows(each, 0)

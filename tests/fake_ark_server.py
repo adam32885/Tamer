@@ -71,13 +71,27 @@ def serve():
         threading.Thread(target=handle, args=(c,), daemon=True).start()
 
 def windows():
-    """Like the real server: an "ASA ..." log window, plus one other window Tamer must leave alone."""
+    """Like the real server through AsaApi: Unreal's log window (class FConsoleWindow), plus a console window
+    like AsaApi's (class ConsoleWindowClass) that Tamer must leave alone. Class names and titles match the real ones."""
     import ctypes, ctypes.wintypes as wt
     u = ctypes.windll.user32
+    u.DefWindowProcW.restype = ctypes.c_ssize_t
+    u.DefWindowProcW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
+    proc = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM)(u.DefWindowProcW)
+
+    class WNDCLASSW(ctypes.Structure):
+        _fields_ = [("style", wt.UINT), ("lpfnWndProc", ctypes.c_void_p), ("cbClsExtra", ctypes.c_int),
+                    ("cbWndExtra", ctypes.c_int), ("hInstance", wt.HINSTANCE), ("hIcon", wt.HICON),
+                    ("hCursor", wt.HANDLE), ("hbrBackground", wt.HBRUSH), ("lpszMenuName", wt.LPCWSTR),
+                    ("lpszClassName", wt.LPCWSTR)]
     u.CreateWindowExW.restype = wt.HWND
     u.CreateWindowExW.argtypes = [wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD] + [ctypes.c_int] * 4 + [wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID]
-    for title, x in ((f"ASA 96.9 | Process {os.getpid()} | Mem: 0.5 GB | Booting...", 0), ("Some other window", 420)):
-        u.CreateWindowExW(0, "STATIC", title, 0x10CF0000, x, 0, 400, 200, None, None, None, None)  # visible overlapped
+    me = os.path.abspath(sys.executable)
+    for cls, title, x in (("FConsoleWindow", f"Server Console (ArkAscendedServer) - {me}", 0),
+                          ("ConsoleWindowClass", me, 420)):
+        wc = WNDCLASSW(lpfnWndProc=ctypes.cast(proc, ctypes.c_void_p), lpszClassName=cls)
+        u.RegisterClassW(ctypes.byref(wc))
+        u.CreateWindowExW(0, cls, title, 0x10CF0000, x, 0, 400, 200, None, None, None, None)  # visible overlapped
     msg = wt.MSG()
     while u.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
         u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
