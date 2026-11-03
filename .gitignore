@@ -1,0 +1,11 @@
+# Tamer's own data - never commit (contains admin passwords, API keys, webhook URLs)
+manager_data/
+servers/
+backups/
+cluster/
+steamcmd/
+# Python / build output
+__pycache__/
+build/
+dist/
+*.spec
