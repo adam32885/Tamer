@@ -2,6 +2,9 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.18.3
+- Fixed: importing a server whose launch line uses `\"` as its quotes, such as `SessionName=\"JAG(Just A Game) The Island\"` with no other quotes around it, cut the name at the first space (`"JAG(Just`). Tamer now reads it the way ARK does and gets the whole name. Servers already imported this way need their name fixed by hand on the Server tab, or importing again.
+
 ## 1.18.2
 - **Download and install** now shows a progress window ("Downloading Tamer… 4.3 of 15.0 MB") with a **Cancel** button, instead of a silent wait. If the download or the installer can't start, Tamer says why and offers the release page. Each step is written to `manager_data\logs\update.log`.
 - Fixed: without your own CurseForge API key, the Mods tab could show "(loading...)" for every installed mod, and the mod update check quietly stopped noticing new versions. The free CurseForge service Tamer uses stopped answering requests for several mods at once. Tamer now fetches them one at a time when that happens (41 mods take a few seconds). If a name really can't be found, the row says "(name not found - click Refresh)" and the reason goes to the Log tab.

@@ -52,6 +52,15 @@ q, _f, _n = am.import_server(cfg, cmdline=f'"{exe}" TheIsland_WP?listen?SessionN
 assert q["session_name"] == "Quoted Plain" and q["map"] == "TheIsland_WP" and q["port"] == 7778, q
 q, _f, _n = am.import_server(cfg, cmdline=f'"{exe}" "TheIsland_WP?listen?SessionName=He said \\"hi\\"!"')
 assert q["session_name"] == 'He said "hi"!', q["session_name"]  # quotes inside a name are kept
+# \" used as plain quotes, with no outer quotes - the real JAG server (1.18.0 read "\JAG...\", 1.18.1 '"JAG(Just')
+jag = (f'"{exe}" \\"TheIsland_WP\\"?listen?SessionName=\\"JAG(Just A Game) The Island\\"?Port=7777?QueryPort=27015?'
+       'RCONPort=27020?RCONEnabled=True?MaxPlayers=70?ServerAdminPassword=\\"secret pw\\" -mods=941450,929713 '
+       '-servergamelog -NoBattlEye')
+q, _f, _n = am.import_server(cfg, cmdline=jag)
+assert (q["map"], q["session_name"], q["name"], q["admin_password"], q["port"], q["rcon_port"], q["mods"], q["battleye"]) == \
+    ("TheIsland_WP", "JAG(Just A Game) The Island", "JAG(Just A Game) The Island", "secret pw", 7777, 27020,
+     "941450,929713", False), q
+assert q["cmd_flags"] == ["-servergamelog"] and not q["extra_args"] and not q["extra_options"], q
 print("escaped quotes: no stray backslashes, names with brackets and spaces kept")
 
 # ---------- round trip: Tamer's own launch line for the import says the same things ----------

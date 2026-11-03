@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.18.2"
+APP_VERSION = "1.18.3"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -1149,6 +1149,23 @@ def split_cmdline(line: str) -> list:
     return args
 
 
+def split_cmdline_loose(line: str) -> list:
+    """Split a launch line where \\" is used as an ordinary quote, e.g. TheIsland_WP?SessionName=\\"My Server\\"
+    with no outer quotes (some managers write it like that, and ARK reads it that way). Backslashes right before
+    a quote are dropped; quotes hold words together and are removed."""
+    line = re.sub(r'\\+"', '"', line)
+    return [t.replace('"', "") for t in re.findall(r'(?:[^\s"]+|"[^"]*"?)+', line.strip())]
+
+
+def map_line_broken(args: list) -> bool:
+    """True when the strict Windows split cut the map line apart: a value with an opening quote and no closing one
+    (e.g. SessionName="JAG(Just), which means the launcher meant \\" as an ordinary quote."""
+    at = next((i for i, a in enumerate(args) if os.path.basename(a).lower() in SERVER_EXE_NAMES), None)
+    if at is None or at + 1 >= len(args) or args[at + 1].startswith("-"):
+        return False
+    return args[at + 1].count('"') % 2 == 1
+
+
 def unquote(value: str) -> str:
     """A value with the quotes around it taken off: "My Server" -> My Server (quotes inside are kept)."""
     v = value.strip()
@@ -1173,6 +1190,8 @@ def parse_server_cmdline(line):
     """Tamer settings from an ARK launch line. Returns (settings, found) where found has "exe", "cluster_id",
     "cluster_dir", "asaapi" when they're in it. Unknown ?options and -flags are kept as extra options/arguments."""
     args = split_cmdline(line) if isinstance(line, str) else list(line)
+    if isinstance(line, str) and map_line_broken(args):  # \" used as plain quotes: read it the way ARK does
+        args = split_cmdline_loose(line)
     at = next((i for i, a in enumerate(args) if os.path.basename(a).lower() in SERVER_EXE_NAMES), None)
     found, s = {}, {}
     if at is None:
