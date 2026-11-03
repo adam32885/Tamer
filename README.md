@@ -15,7 +15,7 @@
 - **Clusters** for character and dino transfers between maps, and **copy settings** from one server to others.
 - **Import your existing servers**, whether made by hand, with a .bat file or another manager: Tamer reads their settings, mods and INI files.
 - **Backups** on a timer, with a second copy on another drive or the cloud.
-- **Game settings** form plus full INI editors, and a **command line** builder.
+- **Game settings** form, **mod settings** editor and full INI editors, plus a **command line** builder.
 - **AsaApi plugins:** install AsaApi and plugins in one click.
 - **Discord alerts**, timed in-game messages, a **troubleshooter** that reads the logs for you, connectivity checks, and performance graphs.
 - **Runs in the background** (tray and Windows service), with light and dark themes, and **updates itself**.
@@ -29,7 +29,7 @@ Tamer is free. If it saves you time, you can support it on **[Ko-fi](https://ko-
 ## Install
 Run **`Tamer-Setup-<version>.exe`**. It installs Tamer just for you, with no admin prompt, into `C:\Users\<you>\AppData\Local\Programs\Tamer`, and adds it to the Start menu. Tick boxes in the installer add a desktop shortcut and start Tamer when you sign in to Windows. You don't need Python for the installed version.
 - **Windows says "Windows protected your PC"?** The installer isn't code-signed yet. Click **More info**, then **Run anyway**.
-- **Updating:** Tamer checks for new versions once a day. When one is out, a green **⬆ Update to x.y.z** link appears in the top-right corner. Click it to see what's new, then choose **Download and install**: Tamer downloads the new installer, closes and updates itself, keeps all your settings, servers and backups, and your ARK servers keep running. **Help > Check for Tamer updates now** checks straight away, and **File > Settings > General** can switch the daily check off. You can also download any version from the [releases page](https://github.com/adam32885/Tamer/releases) and run it over the top.
+- **Updating:** Tamer checks for new versions once a day. When one is out, a green **⬆ Update to x.y.z** link appears in the top-right corner. Click it to see what's new, then choose **Download and install**: Tamer downloads the new installer, closes and updates itself, keeps all your settings, servers and backups, and your ARK servers keep running. **Check for updates** in the top-right corner (or **Help > Check for Tamer updates now**) checks straight away, and **File > Settings > General** can switch the daily check off. You can also download any version from the [releases page](https://github.com/adam32885/Tamer/releases) and run it over the top.
 - **Uninstalling:** go to **Settings > Apps > Tamer > Uninstall**, or use **Uninstall Tamer** in the Start menu. Only the program is removed. Your settings, logs, backups and servers are kept; the uninstaller tells you where, and you can delete that folder yourself.
 - **First run:** a short welcome sets up your first server. It picks where to keep your servers (it suggests the drive with the most free space, such as `D:\ARK Servers`), plus the name, map, players and ports, and can start the install, about 13 GB. New servers go in the same folder. **Help > Run the welcome again** sets up another server. You can still change any server's **Install folder** on the Server tab.
 
@@ -81,6 +81,7 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 - **Scheduled restarts**: set daily times like `04:00, 16:00`. Players are warned at the minutes you choose, and the game can optionally update during the restart.
 - **Auto-update on release**: optionally restarts with warnings when Wildcard pushes a new server build.
 - **Game settings**: a form for common rates and rules (XP, taming, harvest, breeding, PvE, MOTD…) plus full raw editors for `GameUserSettings.ini` and `Game.ini`. Leave a form field blank to use ARK's default. Each save keeps a `.bak` copy.
+  - **Mod settings** lists the mods' own sections in `GameUserSettings.ini` (such as `[StructuresPlus]`), with a best guess at which installed mod each one belongs to. Click a section to see its settings. Edit a value and press **Set**, or use **Add setting** / **Remove setting**. **Add section...** is for a mod that has no settings in the file yet; its CurseForge page lists the section name and settings. Only the sections you change are rewritten, and the three views (Common settings, Mod settings and the raw file) always agree.
   - Edit INI files while the server is **stopped**. ARK rewrites GameUserSettings.ini when it shuts down.
 - **RCON console**: send any admin command. It shows a live player list with kick, ban and copy-ID, a live in-game chat feed, broadcast, and wiping wild dinos.
 - **Backups**: automatic backups every N minutes while the server is online, plus manual backups and a retention limit. Backups include saves, player and tribe files, configs and (for cluster servers) cluster data. **Restore** moves the current saves aside instead of deleting them.
@@ -299,6 +300,14 @@ The **Plugins** tab installs and manages **AsaApi**, the community server-plugin
 - **Remove AsaApi** deletes only AsaApi's own files. Your plugins and settings stay.
 - The **Troubleshooter** flags AsaApi switched on but not installed, and errors in AsaApi's logs (`Win64\logs`).
 - After an ARK update, AsaApi and plugins sometimes need updates too. If a server stops starting, untick **Start this server with AsaApi** until they catch up.
+
+## Reporting a problem
+Use **Help > Send a bug report...**. Tamer saves one zip file, on your Desktop by default, with:
+- Tamer's version, your Windows version, and a summary of each server;
+- Tamer's settings and logs;
+- each server's `ShooterGame.log` (the last 500 lines), if you tick the box. It can contain player names.
+
+Every password, API key, token and Discord webhook is removed first. Nothing is sent anywhere. Tamer then offers to open the [bug report form](https://github.com/adam32885/Tamer/issues/new?template=bug_report.yml) on GitHub. Describe what happened and drag the zip in. Ideas are welcome too: use **New issue > Feature request**.
 
 ## Good to know
 - Servers keep running if you close Tamer. Crash restarts, schedules and auto-backups only work while it is open, so leave it running (minimized is fine).

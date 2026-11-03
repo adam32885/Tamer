@@ -62,13 +62,18 @@ def after(cond, then, tries=60):
     else: raise SystemExit(f"timed out before {then.__name__}")
 
 
-def a():  # no releases published yet
-    app._tamer_update_check(manual=True)
+def a():  # no releases published yet - checked by clicking the top-bar link
+    root.update()
+    assert app.check_link.winfo_ismapped() and app.check_link.cget("text") == "Check for updates"
+    assert app.check_link.winfo_rootx() < app.kofi_link.winfo_rootx(), "left of the Ko-fi link"
+    app.check_link.event_generate("<Button-1>"); root.update()
+    assert app.check_link.cget("text") == "Checking...", "shows it's checking"
     after(lambda: infos, b)
 
 
 def b():
     assert "No Tamer releases" in infos[-1] and not app.update_link.winfo_ismapped(), infos
+    assert app.check_link.winfo_ismapped() and app.check_link.cget("text") == "Check for updates"
     state["release"] = NEWER                           # a newer version comes out
     app._tamer_update_check()
     after(lambda: app.tamer_update, c)
@@ -78,6 +83,7 @@ def c():
     root.update()
     assert app.update_link.winfo_ismapped() and app.update_link.cget("text") == "⬆ Update to 99.0.0"
     assert app.update_link.winfo_rootx() < app.kofi_link.winfo_rootx(), "left of the Ko-fi link"
+    assert not app.check_link.winfo_ismapped(), "the green update link takes its place"
     assert not am.tamer_installed_copy(), "tests run from source"
     app.update_link.event_generate("<Button-1>"); root.update()   # not the installer's copy: release page only
     assert "wasn't set up with the installer" in asked[-1] and "• Something new" in asked[-1], asked[-1]
@@ -136,6 +142,7 @@ def failed():
 
 def e():
     assert f"You have the latest Tamer ({am.APP_VERSION})" in infos[-1] and not app.update_link.winfo_ismapped()
+    assert app.check_link.winfo_ismapped(), "back to 'Check for updates' once up to date"
     app.mgr.stop_event.set(); root.destroy()
 
 

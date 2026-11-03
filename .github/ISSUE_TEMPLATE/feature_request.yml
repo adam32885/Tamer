@@ -1,0 +1,18 @@
+name: Feature request
+description: An idea to make Tamer better
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Tamer to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help?
+      description: What are you trying to do with your server? This helps find the best way to build it.
+    validations:
+      required: false

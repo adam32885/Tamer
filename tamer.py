@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.18.3"
+APP_VERSION = "1.20.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -444,6 +444,69 @@ def ini_get(text: str, section: str, key: str):
             k, v = line.split("=", 1)
             if k.strip().lower() == key.lower():
                 return v.strip()
+    return None
+
+
+ARK_GUS_SECTIONS = {"serversettings", "sessionsettings", "scalabilitygroups", "messageoftheday"}
+
+
+def is_ark_section(name: str) -> bool:
+    """ARK's own GameUserSettings.ini sections; everything else belongs to a mod."""
+    n = name.strip().lower()
+    return n in ARK_GUS_SECTIONS or n.startswith(("/script/", "/game/"))
+
+
+def mod_sections(text: str) -> list:
+    """[(section name, [[key, value], ...])] for the sections in an INI that aren't ARK's own, in file order.
+    Repeated keys (some mods use them for lists) are kept in order."""
+    out, cur = [], None
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("[") and st.endswith("]"):
+            name = st[1:-1].strip()
+            cur = None if is_ark_section(name) else (name, [])
+            if cur:
+                out.append(cur)
+        elif cur is not None and "=" in line and not st.startswith((";", "#")):
+            k, v = line.split("=", 1)
+            cur[1].append([k.strip(), v.strip()])
+    return out
+
+
+def ini_replace_section(text: str, section: str, entries):
+    """Rewrite one [section] as key=value lines (None = remove the section). Other sections stay as they were,
+    and a section that isn't there yet goes at the end."""
+    lines = text.splitlines()
+    b = _section_bounds(lines, section)
+    body = [f"[{section}]"] + [f"{k}={v}" for k, v in entries] if entries is not None else []
+    if b is None:
+        if entries is None:
+            return text
+        while lines and not lines[-1].strip():
+            lines.pop()
+        return "\n".join(lines + ([""] if lines else []) + body) + "\n"
+    s, e = b
+    tail_blank = e < len(lines) and e > s + 1 and not lines[e - 1].strip()  # keep the gap before the next section
+    if body:  # keep the section's comment lines, at the top
+        body[1:1] = [ln for ln in lines[s + 1:e] if ln.strip().startswith((";", "#"))]
+    new = lines[:s] + body + ([""] if tail_blank and body else []) + lines[e:]
+    if entries is None and s > 0 and not new[s - 1].strip() and (s >= len(new) or not new[s].strip()):
+        del new[s - 1]  # don't leave a double blank line where the section was
+    return "\n".join(new).rstrip("\n") + "\n" if new else ""
+
+
+def guess_section_mod(section: str, mod_names: dict):
+    """The installed mod a mod-settings section most likely belongs to ({id: name} -> name or None):
+    StructuresPlus -> "Structures Plus (S+)". Only clear matches; ARK has no official link between the two."""
+    def norm(t):
+        return re.sub(r"[^a-z0-9]", "", t.lower())
+    sec = norm(section)
+    if len(sec) < 4:
+        return None
+    for name in mod_names.values():
+        n = norm(re.sub(r"\(.*?\)|\[.*?\]", "", name))
+        if len(n) >= 4 and (sec in n or n in sec):
+            return name
     return None
 
 
@@ -3533,6 +3596,88 @@ def update_log(msg: str):
         pass
 
 
+BUG_REPORT_ISSUE_URL = f"https://github.com/{TAMER_REPO}/issues/new?template=bug_report.yml"
+SECRET_SETTINGS = ("curseforge_api_key", "discord_webhook", "battlemetrics_token", "chat_key")
+SECRET_SERVER_SETTINGS = ("admin_password", "server_password")
+
+
+def bug_report_redactor(cfg):
+    """A function that removes this setup's passwords, keys, tokens and webhook links from any text."""
+    secrets = {str(cfg.data.get(k) or "").strip() for k in SECRET_SETTINGS}
+    for s in cfg.servers:
+        secrets |= {str(s.get(k) or "").strip() for k in SECRET_SERVER_SETTINGS}
+    secrets = sorted((v for v in secrets if len(v) >= 4), key=len, reverse=True)  # longest first
+    patterns = [(r"https://(?:\w+\.)?discord(?:app)?\.com/api/webhooks/\S+", "(removed webhook)"),
+                (r"\$2a\$10\$[A-Za-z0-9./]{20,}", "(removed key)"),
+                (r"(?i)((?:ServerAdminPassword|ServerPassword|AdminPassword)=)\\?\"?[^?\s\"\\]+", r"\1(removed)")]
+
+    def redact(text: str) -> str:
+        for v in secrets:
+            text = text.replace(v, "(removed)")
+        for rx, repl in patterns:
+            text = re.sub(rx, repl, text)
+        return text
+    return redact
+
+
+def desktop_dir() -> str:
+    """The real Desktop folder (OneDrive often moves it), falling back to the home folder."""
+    if IS_WINDOWS:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf) == 0 and os.path.isdir(buf.value):  # type: ignore[attr-defined]
+            return buf.value  # CSIDL_DESKTOPDIRECTORY
+    home = os.path.expanduser("~")
+    return os.path.join(home, "Desktop") if os.path.isdir(os.path.join(home, "Desktop")) else home
+
+
+def build_bug_report(cfg, mgr, out_path, game_logs=True) -> list:
+    """Write a zip with what's needed to look into a problem - and none of the passwords, keys or tokens.
+    Returns the names of the files it contains."""
+    import platform
+    redact = bug_report_redactor(cfg)
+    files = {}
+    info = [f"Tamer {APP_VERSION}", f"Windows: {platform.platform()}", f"Python: {platform.python_version()}",
+            f"Running as: {'installed Tamer.exe' if tamer_installed_copy() else ('Tamer.exe' if getattr(sys, 'frozen', False) else 'tamer.py from source')}",
+            f"Tamer folder: {BASE_DIR}", f"Made: {dt.datetime.now():%Y-%m-%d %H:%M:%S}",
+            f"CurseForge key set: {'yes' if cfg.data.get('curseforge_api_key') else 'no'}",
+            f"Discord webhook set: {'yes' if cfg.data.get('discord_webhook') else 'no'}",
+            f"Background service: {'running' if service_info() else 'not running'}", "", f"Servers: {len(cfg.servers)}"]
+    for s in cfg.servers:
+        rt = mgr.runtime(s["id"])
+        info.append(f"- {s['name']}: map {s.get('map')}, ports {s.get('port')}/{s.get('rcon_port')}, "
+                    f"installed {'yes' if mgr.is_installed(s) else 'no'}, state {rt.state}, "
+                    f"AsaApi {'on' if s.get('asaapi') else 'off'}, mods {len([m for m in str(s.get('mods', '')).split(',') if m.strip()])}, "
+                    f"build {rt.installed_build or '-'}, folder {s.get('install_dir')}")
+    files["info.txt"] = "\n".join(info) + "\n"
+    data = json.loads(json.dumps(cfg.data))
+    for k in SECRET_SETTINGS:
+        if data.get(k):
+            data[k] = "(removed)"
+    for s in data.get("servers", []):
+        for k in SECRET_SERVER_SETTINGS:
+            if s.get(k):
+                s[k] = "(removed)"
+    data["mod_cache"] = f"({len(data.get('mod_cache') or {})} mods - left out)"
+    files["config.json"] = json.dumps(data, indent=2)
+    logs = os.path.join(DATA_DIR, "logs")
+    for name in sorted(os.listdir(logs)) if os.path.isdir(logs) else []:
+        if name.lower().endswith((".log", ".log.old")):
+            text = read_text_file(os.path.join(logs, name))
+            files[f"logs/{name}"] = text[-2_000_000:]  # the most recent part
+    if game_logs:
+        for s in cfg.servers:
+            path = os.path.join(s["install_dir"], GAMELOG_REL)
+            if os.path.isfile(path):
+                lines = read_text_file(path).splitlines()[-500:]
+                files[f"game_logs/{safe_name(s['name'])}_ShooterGame.log"] = "\n".join(lines) + "\n"
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, text in files.items():
+            z.writestr(name, redact(text))
+    return list(files)
+
+
 def clean_child_env() -> dict:
     """This process's environment without the PyInstaller bookkeeping (_PYI_*, _MEIPASS*), for starting a program
     that may itself start Tamer.exe. Left in, they make the next Tamer.exe look for this one's unpacked files, which
@@ -4540,6 +4685,8 @@ def recolor_tk_widgets(widget, c):
                 w.configure(background=c["bg"])
             elif getattr(w, "is_link", False):  # the Ko-fi link on the menu bar
                 w.configure(background=c["bg"], foreground=c["accent"])
+            elif getattr(w, "is_quiet_link", False):  # "Check for updates"
+                w.configure(background=c["bg"], foreground=c["muted"])
             elif isinstance(w, ttk.Combobox):
                 pd = w.tk.call("ttk::combobox::PopdownWindow", w)
                 w.tk.call(f"{pd}.f.l", "configure", "-background", c["field"], "-foreground", c["fg"],
@@ -4995,6 +5142,59 @@ class App:
         self.themed_window(d)
         d.grab_set()
 
+    # ---- bug report ----------------------------------------------------------------
+    def _bug_report_dialog(self):
+        d = tk.Toplevel(self.root)
+        d.title("Send a bug report")
+        d.transient(self.root)
+        d.resizable(False, False)
+        body = ttk.Frame(d, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="Send a bug report", style="Header.TLabel").pack(anchor="w")
+        ttk.Label(body, text="Tamer makes one zip file to attach to a GitHub issue. It contains:\n"
+                             "  • Tamer's version, your Windows version, and a short summary of each server\n"
+                             "  • Tamer's settings and logs\n\n"
+                             "Every password, API key, token and Discord webhook is removed first. Nothing is sent "
+                             "anywhere: you attach the file yourself.", justify="left", wraplength=640).pack(
+            anchor="w", pady=(6, 8))
+        game = tk.BooleanVar(value=True)
+        ttk.Checkbutton(body, text="Also include each server's ShooterGame.log (the last 500 lines)", variable=game).pack(anchor="w")
+        ttk.Label(body, text="Helps with crashes and mod problems. It can contain player names.", style="Hint.TLabel").pack(
+            anchor="w", padx=(24, 0))
+        path = tk.StringVar(value=os.path.join(desktop_dir(), f"Tamer-bug-report-{dt.datetime.now():%Y-%m-%d}.zip"))
+        row = ttk.Frame(body)
+        row.pack(fill="x", pady=(10, 0))
+        ttk.Label(row, text="Save as").pack(side="left")
+        ttk.Entry(row, textvariable=path, width=52).pack(side="left", padx=6, fill="x", expand=True)
+        ttk.Button(row, text="Browse...", command=lambda: path.set(filedialog.asksaveasfilename(
+            parent=d, defaultextension=".zip", initialfile=os.path.basename(path.get()),
+            initialdir=os.path.dirname(path.get()), filetypes=[("Zip files", "*.zip")]) or path.get())).pack(side="left")
+
+        def make():
+            out = path.get().strip()
+            if not out:
+                return
+            try:
+                self._save_form(silent=True)
+                names = build_bug_report(self.cfg, self.mgr, out, game_logs=game.get())
+            except OSError as e:
+                messagebox.showerror(APP_NAME, f"Couldn't save the bug report:\n{e}", parent=d)
+                return
+            d.destroy()
+            if IS_WINDOWS:
+                subprocess.Popen(["explorer", "/select,", os.path.normpath(out)])
+            if messagebox.askyesno(APP_NAME, f"Bug report saved ({len(names)} files):\n{out}\n\nOpen GitHub to "
+                                             "report the problem? Describe what happened, then drag the zip file "
+                                             "into the issue."):
+                webbrowser.open(BUG_REPORT_ISSUE_URL)
+
+        bb = ttk.Frame(body)
+        bb.pack(fill="x", pady=(14, 0))
+        ttk.Button(bb, text="Make the bug report", command=make, style="Accent.TButton").pack(side="right")
+        ttk.Button(bb, text="Cancel", command=d.destroy).pack(side="right", padx=6)
+        self.bug_win = d
+        self.themed_window(d)
+
     # ---- import a server Tamer didn't make -----------------------------------------
     def _import_dialog(self, replace=None):
         """replace: the untouched starter server, when this is opened from the first-run welcome."""
@@ -5161,22 +5361,29 @@ class App:
         self.root.after(24 * 3600 * 1000, self._tamer_update_tick)
 
     def _tamer_update_check(self, manual=False):
+        if manual:
+            self.check_link.configure(text="Checking...")
+
         def work():
             try:
                 rel = tamer_latest()
             except Exception as e:
                 if manual:
+                    self.q.put(("call", None, lambda: self.check_link.configure(text="Check for updates")))
                     self.q.put(("info", None, f"Couldn't check for Tamer updates.\n\n{e}"))
                 return
             newer = version_tuple(rel["version"]) > version_tuple(APP_VERSION)
 
             def show():
                 self.tamer_update = rel if newer else None
-                if newer:
+                self.check_link.configure(text="Check for updates")
+                if newer:  # the green update link takes the place of "Check for updates"
+                    self.check_link.pack_forget()
                     self.update_link.configure(text=f"⬆ Update to {rel['version']}")
                     self.update_link.pack(side="right", after=self.kofi_link)  # packed after = further left
                 else:
                     self.update_link.pack_forget()
+                    self.check_link.pack(side="right", after=self.kofi_link)
                 if manual:
                     if newer:
                         self._tamer_update_dialog()
@@ -5340,6 +5547,7 @@ class App:
         hm.add_command(label="Support Tamer on Ko-fi", command=lambda: webbrowser.open(KOFI_URL))
         hm.add_command(label="Check for Tamer updates now", command=lambda: self._tamer_update_check(manual=True))
         hm.add_command(label="Run the welcome again (set up a server)...", command=self._welcome)
+        hm.add_command(label="Send a bug report...", command=self._bug_report_dialog)
         mb["Help"]["menu"] = hm
         # top-right corner: a small link to the Ko-fi page
         kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
@@ -5357,6 +5565,14 @@ class App:
         upd.bind("<Leave>", lambda e: upd.configure(font=("Segoe UI", 9, "bold")))
         self.update_link = upd
         self.tamer_update = None  # tamer_latest() result when it's newer than this copy
+        # in the same spot while there's no update to offer: check by hand
+        chk = tk.Label(bar, text="Check for updates", cursor="hand2", padx=10, font=("Segoe UI", 9))
+        chk.is_quiet_link = True
+        chk.pack(side="right", after=kofi)
+        chk.bind("<Button-1>", lambda e: self._tamer_update_check(manual=True))
+        chk.bind("<Enter>", lambda e: chk.configure(font=("Segoe UI", 9, "underline")))
+        chk.bind("<Leave>", lambda e: chk.configure(font=("Segoe UI", 9)))
+        self.check_link = chk
         recolor_tk_widgets(bar, self.colors)
 
     def _layout(self):
@@ -5794,6 +6010,52 @@ class App:
         self._common_two_col_width = max(r[0][0].master.winfo_reqwidth() for r in self._common_rows) + 30
         sf.canvas.bind("<Configure>", lambda e: self._grid_common(2 if e.width >= self._common_two_col_width else 1),
                        add="+")
+
+        # --- Mod settings: the GameUserSettings.ini sections that belong to mods
+        modfr = ttk.Frame(self.ini_nb, padding=6)
+        self.ini_nb.add(modfr, text="Mod settings")
+        ttk.Label(modfr, text="Settings that mods read from GameUserSettings.ini, one section per mod. Each mod's "
+                              "CurseForge page lists its section name and settings. Changes take effect after a restart.",
+                  style="Hint.TLabel", wraplength=900, justify="left").pack(anchor="w", pady=(0, 6))
+        mpw = ttk.PanedWindow(modfr, orient="horizontal")
+        mpw.pack(fill="both", expand=True)
+        left = ttk.Frame(mpw)
+        mpw.add(left, weight=1)
+        self.ms_secs = ttk.Treeview(left, columns=("mod",), show="tree headings", selectmode="browse", height=6)
+        self.ms_secs.heading("#0", text="Section", anchor="w")
+        self.ms_secs.heading("mod", text="Mod (best guess)", anchor="w")
+        self.ms_secs.column("#0", width=180)
+        self.ms_secs.column("mod", width=180)
+        sb = FlowFrame(left)
+        sb.pack(side="bottom", fill="x", pady=(4, 0))
+        sb.add(ttk.Button(sb, text="Add section...", command=self._ms_add_section))
+        sb.add(ttk.Button(sb, text="Remove section", command=self._ms_remove_section))
+        self.ms_secs.pack(fill="both", expand=True)
+        self.ms_secs.bind("<<TreeviewSelect>>", lambda e: self._ms_refresh_keys())
+        right = ttk.Frame(mpw)
+        mpw.add(right, weight=2)
+        self.ms_keys = ttk.Treeview(right, columns=("value",), show="tree headings", selectmode="browse", height=6)
+        self.ms_keys.heading("#0", text="Setting", anchor="w")
+        self.ms_keys.heading("value", text="Value", anchor="w")
+        self.ms_keys.column("#0", width=220)
+        self.ms_keys.column("value", width=260)
+        kb = FlowFrame(right)
+        kb.pack(side="bottom", fill="x", pady=(4, 0))
+        edit = ttk.Frame(right)  # packed after the buttons, so it sits just above them
+        edit.pack(side="bottom", fill="x", pady=(4, 0))
+        self.ms_key, self.ms_val = tk.StringVar(), tk.StringVar()
+        ttk.Label(edit, text="Setting").grid(row=0, column=0, sticky="w")
+        ttk.Entry(edit, textvariable=self.ms_key, width=28).grid(row=0, column=1, sticky="ew", padx=4)
+        ttk.Label(edit, text="Value").grid(row=0, column=2, sticky="w")
+        ttk.Entry(edit, textvariable=self.ms_val, width=28).grid(row=0, column=3, sticky="ew", padx=4)
+        edit.columnconfigure(1, weight=1)
+        edit.columnconfigure(3, weight=1)
+        kb.add(ttk.Button(kb, text="Set", command=self._ms_set, style="Accent.TButton"))
+        kb.add(ttk.Button(kb, text="Add setting", command=self._ms_add_key))
+        kb.add(ttk.Button(kb, text="Remove setting", command=self._ms_remove_key))
+        self.ms_keys.pack(fill="both", expand=True)
+        self.ms_keys.bind("<<TreeviewSelect>>", lambda e: self._ms_pick_key())
+        self.ms_model, self.ms_dirty, self.ms_removed = [], set(), set()
 
         for fname in (GUS, GINI):
             fr = ttk.Frame(self.ini_nb)
@@ -6937,6 +7199,7 @@ class App:
                 txt.insert("1.0", read_text_file(self._ini_path(s, fname)))
             txt.edit_reset()
         self._ini_texts_to_common()
+        self._ms_from_text()
 
     def _ini_texts_to_common(self):
         for (fname, section, key), var in self.common_vars.items():
@@ -6962,21 +7225,155 @@ class App:
                 txt.yview_moveto(pos[0])
 
     def _ini_tab_changed(self, _e=None):
-        idx = self.ini_nb.index("current")
-        if self._ini_tab_prev == 0 and idx != 0:
+        # The raw editors hold the real text; Common settings (tab 0) and Mod settings (tab 1) copy in and out
+        idx, prev = self.ini_nb.index("current"), self._ini_tab_prev
+        if prev == 0 and idx != 0:
             self._common_to_ini_texts()
-        elif idx == 0 and self._ini_tab_prev != 0:
+        if prev == 1 and idx != 1:
+            self._ms_to_text()
+        if idx == 0 and prev != 0:
             self._ini_texts_to_common()
+        if idx == 1 and prev != 1:
+            self._ms_from_text()
         self._ini_tab_prev = idx
+
+    # ---- Mod settings sub-tab ------------------------------------------------------
+    def _ms_from_text(self):
+        """(Re)read the mod sections from the GameUserSettings.ini editor."""
+        keep = self.ms_secs.selection()
+        self.ms_model = [[n, [list(e) for e in es]] for n, es in mod_sections(self.ini_texts[GUS].get("1.0", "end-1c"))]
+        self.ms_dirty, self.ms_removed = set(), set()
+        self._ms_list_sections(keep[0] if keep else None)
+
+    def _ms_list_sections(self, select=None):
+        s = self.current()
+        names = {mid: (self._mod_info(mid) or {}).get("name", "") for mid in (self._mod_ids(s) if s else [])}
+        self.ms_secs.delete(*self.ms_secs.get_children())
+        for i, (name, _e) in enumerate(self.ms_model):
+            self.ms_secs.insert("", "end", iid=str(i), text=name, values=(guess_section_mod(name, names) or "",))
+        if select is not None and select in self.ms_secs.get_children():
+            self.ms_secs.selection_set(select)
+        elif self.ms_model:
+            self.ms_secs.selection_set("0")
+        self._ms_refresh_keys()
+
+    def _ms_to_text(self):
+        """Write the sections that were changed back into the editor; the rest of the file is left exactly as it was."""
+        if not self.ms_dirty and not self.ms_removed:
+            return
+        txt = self.ini_texts[GUS]
+        text = txt.get("1.0", "end-1c")
+        for name in self.ms_removed:
+            text = ini_replace_section(text, name, None)
+        for name, entries in self.ms_model:
+            if name in self.ms_dirty:
+                text = ini_replace_section(text, name, entries)
+        pos = txt.yview()
+        txt.delete("1.0", "end")
+        txt.insert("1.0", text)
+        txt.yview_moveto(pos[0])
+        self.ms_dirty, self.ms_removed = set(), set()
+
+    def _ms_section(self):
+        sel = self.ms_secs.selection()
+        return self.ms_model[int(sel[0])] if sel and int(sel[0]) < len(self.ms_model) else None
+
+    def _ms_refresh_keys(self, select=None):
+        self.ms_keys.delete(*self.ms_keys.get_children())
+        sec = self._ms_section()
+        for i, (k, v) in enumerate(sec[1] if sec else []):
+            self.ms_keys.insert("", "end", iid=str(i), text=k, values=(v,))
+        if select is not None and str(select) in self.ms_keys.get_children():
+            self.ms_keys.selection_set(str(select))
+            self.ms_keys.see(str(select))
+        elif select is None:
+            self.ms_key.set("")
+            self.ms_val.set("")
+
+    def _ms_pick_key(self):
+        sec, sel = self._ms_section(), self.ms_keys.selection()
+        if sec and sel:
+            k, v = sec[1][int(sel[0])]
+            self.ms_key.set(k)
+            self.ms_val.set(v)
+
+    def _ms_check_key(self):
+        key = self.ms_key.get().strip()
+        if not key or "=" in key or "[" in key:
+            messagebox.showerror(APP_NAME, "Type the setting's name (no = or [ ]), as the mod's page shows it.")
+            return None
+        return key
+
+    def _ms_set(self):
+        sec, sel = self._ms_section(), self.ms_keys.selection()
+        if not sec:
+            return
+        if not sel:
+            return self._ms_add_key()
+        key = self._ms_check_key()
+        if key:
+            i = int(sel[0])
+            sec[1][i] = [key, self.ms_val.get().strip()]
+            self.ms_dirty.add(sec[0])
+            self._ms_refresh_keys(select=i)
+
+    def _ms_add_key(self):
+        sec = self._ms_section()
+        if not sec:
+            messagebox.showinfo(APP_NAME, "Pick a section first, or use 'Add section...' for a mod that has none yet.")
+            return
+        key = self._ms_check_key()
+        if key:
+            sec[1].append([key, self.ms_val.get().strip()])
+            self.ms_dirty.add(sec[0])
+            self._ms_refresh_keys(select=len(sec[1]) - 1)
+
+    def _ms_remove_key(self):
+        sec, sel = self._ms_section(), self.ms_keys.selection()
+        if sec and sel:
+            del sec[1][int(sel[0])]
+            self.ms_dirty.add(sec[0])
+            self._ms_refresh_keys()
+
+    def _ms_add_section(self):
+        name = simpledialog.askstring(APP_NAME, "The mod's section name, as its page shows it (without the [ ]):",
+                                      parent=self.root)
+        name = (name or "").strip().strip("[]").strip()
+        if not name:
+            return
+        if is_ark_section(name):
+            messagebox.showerror(APP_NAME, f"[{name}] is one of ARK's own sections - use Common settings or the "
+                                           f"{GUS} tab for it.")
+            return
+        if any(n.lower() == name.lower() for n, _e in self.ms_model):
+            messagebox.showerror(APP_NAME, f"There's already a [{name}] section.")
+            return
+        self.ms_model.append([name, []])
+        self.ms_dirty.add(name)
+        self.ms_removed.discard(name)
+        self._ms_list_sections(str(len(self.ms_model) - 1))
+
+    def _ms_remove_section(self):
+        sec = self._ms_section()
+        if not sec or not messagebox.askyesno(APP_NAME, f"Remove the [{sec[0]}] section and its {len(sec[1])} "
+                                                        "setting(s)? (Nothing changes on disk until you save.)"):
+            return
+        self.ms_model.remove(sec)
+        self.ms_dirty.discard(sec[0])
+        self.ms_removed.add(sec[0])
+        self._ms_list_sections()
 
     def _save_ini(self):
         s = self.current()
         if not s:
             return
-        if self.ini_nb.index("current") == 0:
+        idx = self.ini_nb.index("current")
+        if idx == 0:
             self._common_to_ini_texts()
-        else:
-            self._ini_texts_to_common()
+        elif idx == 1:
+            self._ms_to_text()
+        self._ini_texts_to_common()  # so all three views agree with what's saved
+        self._ms_from_text()
         if self.mgr.is_running(s) and not messagebox.askyesno(
                 APP_NAME, "The server is running. ARK rewrites GameUserSettings.ini when it shuts down, "
                           "which can undo your edits.\n\nStop the server first, then save. Save anyway?"):

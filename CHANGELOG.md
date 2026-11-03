@@ -2,6 +2,12 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.20.0
+- **Mod settings:** a new tab under Game settings for the settings mods read from GameUserSettings.ini. It lists each mod's section (such as `[StructuresPlus]`) with a best guess at which installed mod it belongs to, and its settings. You can edit, add and remove settings and sections. Only what you change is rewritten, and it stays in step with Common settings and the raw INI editor.
+- **Check for updates** link in the top-right corner, next to Ko-fi. The green **⬆ Update to x.y.z** link takes its place when there's an update.
+- **Help > Send a bug report...** makes one zip file to attach to a GitHub issue: Tamer's version, your Windows version, a summary of each server, and Tamer's settings and logs, plus each server's ShooterGame.log if you tick the box. Every password, API key, token and Discord webhook is removed first, and nothing is sent anywhere. It then opens the GitHub bug report form for you.
+- **Bug report and feature request forms** on GitHub (New issue), so reports include what's needed to fix them.
+
 ## 1.18.3
 - Fixed: importing a server whose launch line uses `\"` as its quotes, such as `SessionName=\"JAG(Just A Game) The Island\"` with no other quotes around it, cut the name at the first space (`"JAG(Just`). Tamer now reads it the way ARK does and gets the whole name. Servers already imported this way need their name fixed by hand on the Server tab, or importing again.
 

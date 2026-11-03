@@ -1,0 +1,73 @@
+name: Bug report
+description: Something in Tamer doesn't work as it should
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem! The quickest way to get it fixed:
+        in Tamer, use **Help > Send a bug report...** and attach the zip it makes below.
+        It has your Tamer version and logs, with all passwords, keys and tokens removed.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What went wrong? Copy any error message word for word.
+      placeholder: When I click Start, ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen
+      description: The clicks that lead to the problem, if you can make it happen again.
+      placeholder: |
+        1. Open the Mods tab
+        2. Click Install on ...
+        3. ...
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Tamer version
+      description: Shown in Help > About.
+      placeholder: "1.20.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows version
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - Other / not sure
+    validations:
+      required: false
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is Tamer installed?
+      options:
+        - With the installer (Tamer-Setup-x.y.z.exe)
+        - Tamer.exe on its own
+        - From source (tamer.py)
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Bug report zip and screenshots
+      description: Drag the zip from Help > Send a bug report here, plus any screenshots.
+    validations:
+      required: false

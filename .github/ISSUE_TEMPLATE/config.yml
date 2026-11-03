@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How do I...? (the guide)
+    url: https://github.com/adam32885/Tamer#readme
+    about: Setting up servers, mods, clusters, backups and more is explained in the README.
