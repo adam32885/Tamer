@@ -4,7 +4,16 @@
 
 *Tamer is an unofficial tool. It isn't affiliated with or endorsed by Studio Wildcard.*
 
-## Requirements
+## Install
+Run **`Tamer-Setup-<version>.exe`**. It installs Tamer just for you, with no admin prompt, into `C:\Users\<you>\AppData\Local\Programs\Tamer`, and adds it to the Start menu. Tick boxes in the installer add a desktop shortcut and start Tamer when you sign in to Windows. You don't need Python for the installed version.
+- **Windows says "Windows protected your PC"?** The installer isn't code-signed yet. Click **More info**, then **Run anyway**.
+- **Updating:** run the newer installer. It closes Tamer if it's open, replaces the program and keeps all your settings, servers and backups. ARK servers keep running.
+- **Uninstalling:** go to **Settings > Apps > Tamer > Uninstall**, or use **Uninstall Tamer** in the Start menu. Only the program is removed. Your settings, logs, backups and servers are kept; the uninstaller tells you where, and you can delete that folder yourself.
+- **Where servers go:** new servers install inside Tamer's folder by default (about 13 GB each). You can pick another drive with the **Install folder** on the Server tab.
+
+To run from source instead, see below.
+
+## Requirements (running from source)
 - Windows 10/11 (or Windows Server 2019+)
 - Python 3.9 or newer from https://www.python.org/downloads/. During install, tick **"Add python.exe to PATH"**. Tkinter is included by default.
 - Plenty of disk space (about 13 GB per server install) and RAM (12–16 GB per map is typical)
@@ -25,6 +34,8 @@ Tamer keeps everything next to itself:
 | `cluster\` | Shared cluster transfer data |
 
 **Want a single .exe?** Run `build_exe.bat`. It produces `dist\Tamer.exe`, with Tamer's icon. Put that exe in its own folder, because it stores its data next to itself.
+
+**Building the installer:** run `build_installer.bat`. It needs PyInstaller and Inno Setup 6 (`winget install JRSoftware.InnoSetup`). It builds `dist\Tamer.exe`, then `installer\Output\Tamer-Setup-<version>.exe`, using the version in `tamer.py`.
 
 ## First server in 5 steps
 1. Open the **Server** tab. Set a server name and map, check the ports, and click **Save server settings**.

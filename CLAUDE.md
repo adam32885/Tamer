@@ -48,3 +48,10 @@ A Windows desktop app for running ARK: Survival Ascended dedicated servers, incl
 
 ## Build
 `build_exe.bat` runs PyInstaller (`--name Tamer --icon tamer.ico --add-data` for the icons). `Start Tamer.bat` runs it from source.
+
+`build_installer.bat` builds the exe, then the installer from `installer/tamer.iss` (Inno Setup 6), passing `APP_VERSION` from `tamer.py`. The result is `installer/Output/Tamer-Setup-<version>.exe`.
+- The install is per-user, into `AppData\Local\Programs\Tamer` with no admin prompt, because Tamer writes its data next to `Tamer.exe`. Program Files would be read-only.
+- Never change `AppId` in `tamer.iss`: newer installers find older installs through it.
+- The installer's "Start with Windows" writes the same `Startup\Tamer.bat` as `set_start_with_windows`. Keep the two in step.
+- Uninstall never deletes data (manager_data, servers, backups).
+- To test it, install silently into a temp folder (`/VERYSILENT /DIR=... /TASKS=...`), then run `unins000.exe /VERYSILENT`.
