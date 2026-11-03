@@ -16,7 +16,18 @@ errors = []; root.report_callback_exception = lambda *a: errors.append(a)
 for i in range(3):
     app.mgr.log(s0, f"log line {i}")
 names = [app.nb.tab(i, "text") for i in app.nb.tabs()]
+def server_list_fits():
+    """Status and Players must never be cut off, and the list starts wide enough to show every column."""
+    font = am.tkfont.nametofont("TkDefaultFont")
+    for col, texts in (("status", ["Status", "Not installed", "Queued to start"]), ("players", ["Players"])):
+        need = max(font.measure(t) for t in texts) + 8
+        assert app.tree.column(col, "width") >= need, (col, app.tree.column(col, "width"), need)
+    total = sum(app.tree.column(c, "width") for c in ("#0", "map", "status", "players"))
+    assert app.tree.winfo_width() >= min(total, W * 0.45 - 40), (app.tree.winfo_width(), total)
+    print("server list:", app.tree.winfo_width(), "px wide, columns need", total)
 def step(i=0):
+    if i == 0:
+        server_list_fits()
     if i >= len(names):
         app.mgr.stop_event.set(); root.destroy(); return
     app.nb.select(i)

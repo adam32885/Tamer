@@ -35,6 +35,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -53,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.15.2"
+APP_VERSION = "1.16.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -67,6 +68,9 @@ STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
 BUILD_API_URL = f"https://api.steamcmd.net/v1/info/{ASA_APP_ID}"
 DOCS_URL = "https://ark.wiki.gg/wiki/Server_configuration"
 KOFI_URL = "https://ko-fi.com/tamerarkmanager"
+TAMER_REPO = "adam32885/Tamer"
+TAMER_RELEASE_API = os.environ.get("ASM_TAMER_API", f"https://api.github.com/repos/{TAMER_REPO}/releases/latest")
+TAMER_RELEASES_PAGE = f"https://github.com/{TAMER_REPO}/releases"
 
 # CurseForge (ASA mods). A free personal API key from console.curseforge.com is recommended;
 # without one the manager falls back to the unofficial curse.tools proxy.
@@ -1085,6 +1089,7 @@ class AppConfig:
             "discord_webhook": "",
             "discord_name": APP_NAME,
             "discord_events": {k: k != "players" for k, _ in DISCORD_EVENTS},
+            "tamer_update_check": True,  # look for a newer Tamer on GitHub once a day
             "servers": [],
         }
         self.lock = threading.RLock()
@@ -3172,6 +3177,38 @@ def asaapi_status(s) -> dict:
             "manual": installed and not manifest, "loader": os.path.isfile(p["loader"]), "dll": os.path.isfile(p["dll"])}
 
 
+def version_tuple(v) -> tuple:
+    """"v1.15.3" or "1.15.3" -> (1, 15, 3). Anything that isn't a number counts as 0."""
+    return tuple(int(p) if p.isdigit() else 0 for p in str(v).strip().lstrip("vV").split("."))
+
+
+def tamer_latest() -> dict:
+    """The newest Tamer release on GitHub: version, installer download (None if the release has none), notes, page."""
+    req = urllib.request.Request(TAMER_RELEASE_API, headers={"User-Agent": f"Tamer/{APP_VERSION}",
+                                                              "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rel = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise RuntimeError("No Tamer releases have been published yet.")
+        if e.code in (403, 429):
+            raise RuntimeError("GitHub is limiting update checks right now - try again in an hour.")
+        raise RuntimeError(f"GitHub returned HTTP {e.code}.")
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Couldn't reach GitHub: {e.reason}")
+    setup = next((a for a in rel.get("assets", []) if re.fullmatch(r"Tamer-Setup-[\d.]+\.exe", a.get("name", ""))), None)
+    return {"version": str(rel.get("tag_name", "")).lstrip("vV"), "notes": (rel.get("body") or "").strip(),
+            "page": rel.get("html_url") or TAMER_RELEASES_PAGE,
+            "url": setup and setup.get("browser_download_url"), "name": setup and setup.get("name")}
+
+
+def tamer_installed_copy() -> bool:
+    """True when this is the installer's copy of Tamer.exe, so running a newer installer updates this very copy.
+    (A Tamer.exe somewhere else, or tamer.py, would get a second, separate install instead.)"""
+    return getattr(sys, "frozen", False) and os.path.isfile(os.path.join(BASE_DIR, "unins000.exe"))
+
+
 def asaapi_latest():
     """(tag, zip download url, asset name) of the newest AsaApi release on GitHub."""
     req = urllib.request.Request(ASAAPI_RELEASE_API, headers={"User-Agent": f"Tamer/{APP_VERSION}",
@@ -4359,6 +4396,7 @@ class App:
         self.apply_theme()
         root.after(15000, self._watch_system_theme)
         root.after(150, self._pump)
+        root.after(20000, self._tamer_update_tick)
         self.mgr.start_monitor()
 
     # ---- look & feel -------------------------------------------------------------
@@ -4442,6 +4480,80 @@ class App:
         recolor_tk_widgets(win, self.colors)
         set_dark_titlebar(win, self.theme_mode == "dark")
 
+    # ---- Tamer's own updates ------------------------------------------------------
+    def _tamer_update_tick(self):
+        """Look for a newer Tamer soon after opening, then once a day (if the setting is on)."""
+        if self.cfg.data.get("tamer_update_check", True):
+            self._tamer_update_check()
+        self.root.after(24 * 3600 * 1000, self._tamer_update_tick)
+
+    def _tamer_update_check(self, manual=False):
+        def work():
+            try:
+                rel = tamer_latest()
+            except Exception as e:
+                if manual:
+                    self.q.put(("info", None, f"Couldn't check for Tamer updates.\n\n{e}"))
+                return
+            newer = version_tuple(rel["version"]) > version_tuple(APP_VERSION)
+
+            def show():
+                self.tamer_update = rel if newer else None
+                if newer:
+                    self.update_link.configure(text=f"⬆ Update to {rel['version']}")
+                    self.update_link.pack(side="right", after=self.kofi_link)  # packed after = further left
+                else:
+                    self.update_link.pack_forget()
+                if manual:
+                    if newer:
+                        self._tamer_update_dialog()
+                    else:
+                        messagebox.showinfo(APP_NAME, f"You have the latest Tamer ({APP_VERSION}).")
+            self.q.put(("call", None, show))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _tamer_update_dialog(self):
+        rel = self.tamer_update
+        if not rel:
+            return
+        notes = rel["notes"][:1200] + ("..." if len(rel["notes"]) > 1200 else "")
+        msg = f"Tamer {rel['version']} is out. You have {APP_VERSION}.\n\n" + (f"What's new:\n{notes}\n\n" if notes else "")
+        if rel["url"] and tamer_installed_copy():
+            if messagebox.askyesno(APP_NAME, msg + "Download and install it now? Tamer closes while it updates; "
+                                                   "your settings are kept and your servers keep running."):
+                self._tamer_update_install(rel)
+        else:
+            why = ("" if rel["url"] else "This release has no installer attached.\n\n") if tamer_installed_copy() else \
+                  ("This copy of Tamer wasn't set up with the installer, so it can't update itself. Download the "
+                   "new version from the release page.\n\n")
+            if messagebox.askyesno(APP_NAME, msg + why + "Open the release page?"):
+                webbrowser.open(rel["page"])
+
+    def _tamer_update_install(self, rel):
+        target = os.path.join(tempfile.gettempdir(), rel["name"])
+
+        def work():
+            try:
+                req = urllib.request.Request(rel["url"], headers={"User-Agent": f"Tamer/{APP_VERSION}"})
+                with urllib.request.urlopen(req, timeout=120) as r, open(target + ".part", "wb") as f:
+                    shutil.copyfileobj(r, f)
+                os.replace(target + ".part", target)
+            except Exception as e:
+                self.q.put(("error", None, f"Couldn't download the update ({e}).\n\nYou can get it from "
+                                           f"{rel['page']}"))
+                return
+
+            def run():
+                try:
+                    subprocess.Popen([target], close_fds=True)
+                except OSError as e:
+                    messagebox.showerror(APP_NAME, f"Couldn't start the installer ({e}). It's saved as:\n{target}")
+                    return
+                self._exit()  # the installer replaces Tamer.exe, so get out of its way
+            self.q.put(("call", None, run))
+        self.mgr.log(self.current() or self.cfg.servers[0], f"Downloading Tamer {rel['version']}...")
+        threading.Thread(target=work, daemon=True).start()
+
     def _watch_system_theme(self):
         if self.cfg.data.get("theme", "system") == "system" and self._effective_theme() != self.theme_mode:
             self.apply_theme()
@@ -4485,6 +4597,7 @@ class App:
                       "Not affiliated with or endorsed by Studio Wildcard.\n\n"
                       f"Data folder: {DATA_DIR}"))
         hm.add_command(label="Support Tamer on Ko-fi", command=lambda: webbrowser.open(KOFI_URL))
+        hm.add_command(label="Check for Tamer updates now", command=lambda: self._tamer_update_check(manual=True))
         mb["Help"]["menu"] = hm
         # top-right corner: a small link to the Ko-fi page
         kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
@@ -4494,6 +4607,14 @@ class App:
         kofi.bind("<Enter>", lambda e: kofi.configure(font=("Segoe UI", 9, "bold", "underline")))
         kofi.bind("<Leave>", lambda e: kofi.configure(font=("Segoe UI", 9, "bold")))
         self.kofi_link = kofi
+        # shown next to it when a newer Tamer is out (see _tamer_update_check)
+        upd = tk.Label(bar, text="", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
+        upd.is_link = True
+        upd.bind("<Button-1>", lambda e: self._tamer_update_dialog())
+        upd.bind("<Enter>", lambda e: upd.configure(font=("Segoe UI", 9, "bold", "underline")))
+        upd.bind("<Leave>", lambda e: upd.configure(font=("Segoe UI", 9, "bold")))
+        self.update_link = upd
+        self.tamer_update = None  # tamer_latest() result when it's newer than this copy
         recolor_tk_widgets(bar, self.colors)
 
     def _layout(self):
@@ -4503,7 +4624,15 @@ class App:
         # left: server list
         left = ttk.Frame(pw)
         pw.add(left, weight=0)
-        initial_sash(pw, 0.26, lo=230, hi=380)
+        # Column widths come from the text, so they still fit when Windows display scaling makes it bigger,
+        # and the list starts wide enough to show all of them (up to 45% of the window; the divider still drags)
+        font = tkfont.nametofont("TkDefaultFont")
+        name_w = font.measure("Server 10") + 12 + 30  # + the status dot
+        map_w = font.measure("The Island") + 16
+        status_w = max(font.measure(t) for t in ["Status", *self.colors["status"]]) + 16
+        players_w = font.measure("Players") + 16
+        self.server_cols_w = name_w + map_w + status_w + players_w
+        initial_sash(pw, 0.45, lo=230, hi=self.server_cols_w + 24)
         ttk.Label(left, text="Servers", style="Title.TLabel").pack(anchor="w")
         cols = ("map", "status", "players")
         self.tree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="browse", height=4,
@@ -4512,10 +4641,10 @@ class App:
         self.tree.heading("map", text="Map")
         self.tree.heading("status", text="Status")
         self.tree.heading("players", text="Players")
-        self.tree.column("#0", width=110, minwidth=70)
-        self.tree.column("map", width=85, minwidth=50)
-        self.tree.column("status", width=80, minwidth=50)
-        self.tree.column("players", width=50, minwidth=40, anchor="center", stretch=False)
+        self.tree.column("#0", width=name_w, minwidth=70)
+        self.tree.column("map", width=map_w, minwidth=50)
+        self.tree.column("status", width=status_w, minwidth=status_w, stretch=False)
+        self.tree.column("players", width=players_w, minwidth=players_w, anchor="center", stretch=False)
         for state, color in self.colors["status"].items():
             self.tree.tag_configure(state, foreground=color)
         self.tree.tag_configure("busy", foreground=self.colors["busy"])
@@ -7139,6 +7268,10 @@ class App:
         ttk.Checkbutton(g, text="Back up saves before every game update", variable=pre_upd).grid(
             row=r, column=1, columnspan=2, sticky="w", pady=3)
         r += 1
+        tamer_upd = tk.BooleanVar(value=data.get("tamer_update_check", True))
+        ttk.Checkbutton(g, text="Check for new versions of Tamer (once a day, from GitHub)", variable=tamer_upd).grid(
+            row=r, column=1, columnspan=2, sticky="w", pady=3)
+        r += 1
         theme_labels = dict(THEME_CHOICES)
         theme_var = tk.StringVar(value=theme_labels.get(data.get("theme", "system"), "Match Windows"))
         ttk.Label(g, text="Appearance").grid(row=r, column=0, sticky="w", pady=3)
@@ -7273,6 +7406,7 @@ class App:
                 data[key] = vars_[key].get().strip()
             data["curseforge_api_key"] = clean_api_key(data["curseforge_api_key"])
             data["backup_before_update"] = pre_upd.get()
+            data["tamer_update_check"] = tamer_upd.get()
             data["stagger_starts"] = stagger_v.get()
             data.update(cluster_id=cid, update_check_min=upd, mod_check_min=modmin,
                         discord_events={k: v.get() for k, v in ev_vars.items()},

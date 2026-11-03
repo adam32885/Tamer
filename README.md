@@ -4,12 +4,12 @@
 
 *Tamer is an unofficial tool. It isn't affiliated with or endorsed by Studio Wildcard.*
 
-Tamer is free. If it saves you time, you can support it on **[Ko-fi](https://ko-fi.com/tamerarkmanager)**. There's a **☕ Support Tamer** link in the top-right corner of the window, and another under **Help**.
+Tamer is free. If it saves you time, you can support it on **[Ko-fi](https://ko-fi.com/tamerarkmanager)**. There's a **☕ Support Tamer** link in the top-right corner of the window, and another under **Help**. Tamer is open source under the [MIT licence](LICENSE).
 
 ## Install
 Run **`Tamer-Setup-<version>.exe`**. It installs Tamer just for you, with no admin prompt, into `C:\Users\<you>\AppData\Local\Programs\Tamer`, and adds it to the Start menu. Tick boxes in the installer add a desktop shortcut and start Tamer when you sign in to Windows. You don't need Python for the installed version.
 - **Windows says "Windows protected your PC"?** The installer isn't code-signed yet. Click **More info**, then **Run anyway**.
-- **Updating:** run the newer installer. It closes Tamer if it's open, replaces the program and keeps all your settings, servers and backups. ARK servers keep running.
+- **Updating:** Tamer checks for new versions once a day. When one is out, a green **⬆ Update to x.y.z** link appears in the top-right corner. Click it to see what's new, then choose **Download and install**: Tamer downloads the new installer, closes and updates itself, keeps all your settings, servers and backups, and your ARK servers keep running. **Help > Check for Tamer updates now** checks straight away, and **File > Settings > General** can switch the daily check off. You can also download any version from the [releases page](https://github.com/adam32885/Tamer/releases) and run it over the top.
 - **Uninstalling:** go to **Settings > Apps > Tamer > Uninstall**, or use **Uninstall Tamer** in the Start menu. Only the program is removed. Your settings, logs, backups and servers are kept; the uninstaller tells you where, and you can delete that folder yourself.
 - **Where servers go:** new servers install inside Tamer's folder by default (about 13 GB each). You can pick another drive with the **Install folder** on the Server tab.
 
