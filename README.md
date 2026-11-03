@@ -247,6 +247,23 @@ The **Plugins** tab installs and manages **AsaApi**, the community server-plugin
 - The **Troubleshooter** flags AsaApi switched on but not installed, and errors in AsaApi's logs (`Win64\logs`).
 - After an ARK update, AsaApi and plugins sometimes need updates too. If a server stops starting, untick **Start this server with AsaApi** until they catch up.
 
+## Tamer Chat (Discord chat bot)
+Tamer Chat links your servers' in-game chat with a Discord channel, with a live status message, admin commands and account linking. It's a separate Python program in the `Tamer_Chat` folder (its own README explains every feature). Tamer sets it up and runs it for you. Open **File > Tamer Chat**:
+1. Pick the **Tamer Chat folder** (the one with `tamer_chat.py`). By default Tamer looks for `Tamer_Chat` next to itself.
+2. Paste your **Discord bot token** and the **chat channel ID**. The admin channel, admin role and status channel are optional. To get an ID, turn on Developer Mode in Discord, then right-click the channel or role and choose **Copy ID**.
+3. If Tamer says packages are missing, click **Install Python packages**. Tamer Chat needs Python itself too (python.org, tick "Add to PATH").
+4. Tick **Keep the Tamer Chat bot running** and click **Save**.
+
+Tamer then:
+- writes the bot's `servers.json` from your servers (names, RCON ports and passwords) and keeps it up to date. When you add, rename or remove a server, the bot restarts by itself to pick up the change;
+- makes a shared secret key and puts it in the bot's `.env` and in every server's TamerChat plugin settings;
+- starts the bot when Tamer opens, restarts it if it stops (it gives up after 5 stops in 10 minutes and tells you why), and leaves it running when you close Tamer, like the servers;
+- shows the bot's log in the Tamer Chat window. The log file is `manager_data\logs\tamer_chat.log`.
+
+**The TamerChat plugin** (optional) adds instant chat, join/leave messages and in-game `/online`, `/discord` and `/link`. It has to be built once with Visual Studio (Tamer Chat README, Part 1). Then use **Plugins > Install Tamer Chat** to put it on one server or all of them, with the server stopped. Servers with the plugin loaded switch to plugin mode by themselves; the rest keep working over RCON.
+
+Other bot settings (restart warnings, downtime alerts, the linked role and so on) are in its `.env` file: **Open .env** in the Tamer Chat window.
+
 ## Good to know
 - Servers keep running if you close Tamer. Crash restarts, schedules and auto-backups only work while it is open, so leave it running (minimized is fine).
 - The admin password is also the RCON password. Profiles are stored in plain text in `manager_data\config.json`, so keep that folder private.

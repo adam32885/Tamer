@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.15.1"
+APP_VERSION = "1.16.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -373,6 +373,22 @@ def format_duration(seconds) -> str:
     h, rem = divmod(rem, 3600)
     m = rem // 60
     return f"{d}d {h}h" if d else f"{h}h {m:02d}m" if h else f"{m}m"
+
+
+def process_cmdline(pid) -> str:
+    """The command line of a running process ("" if it's gone or can't be read)."""
+    if not IS_WINDOWS:
+        try:
+            with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
+                return " ".join(a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a)
+        except OSError:
+            return ""
+    ps = f"(Get-CimInstance Win32_Process -Filter \"ProcessId={int(pid)}\").CommandLine"
+    try:
+        return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                              text=True, timeout=45, creationflags=CREATE_NO_WINDOW).stdout.strip()
+    except Exception:
+        return ""
 
 
 def scan_server_processes() -> list[tuple[int, str, str]]:
@@ -1084,6 +1100,11 @@ class AppConfig:
             "discord_webhook": "",
             "discord_name": APP_NAME,
             "discord_events": {k: k != "players" for k, _ in DISCORD_EVENTS},
+            "chat_dir": "",  # Tamer Chat bot folder ("" = Tamer_Chat next to Tamer)
+            "chat_python": "",  # "" = find Python automatically
+            "chat_run": False,  # keep the Tamer Chat bot running
+            "chat_key": "",  # shared secret between the bot and the TamerChat plugins (made on first use)
+            "chat_port": 8765,
             "servers": [],
         }
         self.lock = threading.RLock()
@@ -1215,6 +1236,13 @@ class Manager:
         self.rt: dict[str, ServerRuntime] = {}
         self.stop_event = threading.Event()
         self.window_lock = threading.Lock()  # _log_window runs from the tick and from a start's fast check
+        self.chat_lock = threading.RLock()
+        self.chat_proc = None
+        self.chat_pid = None
+        self.chat_crashes = collections.deque(maxlen=10)
+        self.chat_error = ""  # why the bot isn't running, for the Tamer Chat window
+        self.chat_retry_at = 0.0
+        self.chat_last_sync = 0.0
         self.steam_lock = threading.Lock()
         self.latest_build = None
         self.last_update_check = 0.0
@@ -1440,6 +1468,8 @@ class Manager:
                 rt.announced_online = True
                 rt.players_ready = False
         self.adopt_processes()
+        self.chat_proc = self.chat_pid = None
+        self.chat_adopt()
         self.first_tick = False
         self.last_scan = time.time()
 
@@ -2237,8 +2267,13 @@ class Manager:
         if self.first_tick or now - self.last_scan > 60:
             self.last_scan = now
             self.adopt_processes()
+            self.chat_adopt()
             for s in self.cfg.servers:
                 self.runtime(s["id"]).installed_build = self.read_installed_build(s)
+        try:
+            self._chat_tick(now)
+        except Exception:  # the chat bot must never get in the way of running the servers
+            traceback.print_exc()
         if self.first_tick:
             self.first_tick = False
             auto = [s for s in self.cfg.servers
@@ -2445,6 +2480,131 @@ class Manager:
         while time.time() < deadline and rt.pid == pid and pid_alive(pid) and not self.stop_event.is_set():
             self._log_window(s, rt, True)
             time.sleep(0.5)
+
+    # ---- Tamer Chat bot ---------------------------------------------------------
+    CHAT_PID_PATH = os.path.join(DATA_DIR, "tamer_chat.json")
+
+    def chat_note(self, msg):
+        """A line for the bot's log (the Tamer Chat window shows it), marked as coming from Tamer."""
+        try:
+            os.makedirs(os.path.dirname(chat_log_path()), exist_ok=True)
+            with open(chat_log_path(), "a", encoding="utf-8") as f:
+                f.write(f"[{dt.datetime.now():%Y-%m-%d %H:%M:%S}] [Tamer] {msg}\n")
+        except OSError:
+            pass
+        self.notify("chat", None, msg)
+
+    def chat_running(self) -> bool:
+        if self.chat_proc is not None and self.chat_proc.poll() is None:
+            return True
+        return pid_alive(self.chat_pid)
+
+    def chat_problem(self):
+        """Why the bot can't start right now, in plain words, or "" if it's ready."""
+        d = chat_dir(self.cfg)
+        if not os.path.isfile(os.path.join(d, CHAT_BOT_FILE)):
+            return f"Tamer Chat isn't in {d} (no {CHAT_BOT_FILE}). Pick its folder in File > Tamer Chat."
+        if not env_read(os.path.join(d, ".env")).get("DISCORD_TOKEN"):
+            return "No Discord bot token yet. Paste it in File > Tamer Chat."
+        if not env_read(os.path.join(d, ".env")).get("BRIDGE_CHANNEL_ID"):
+            return "No chat channel ID yet. Add it in File > Tamer Chat."
+        py = chat_python(self.cfg)
+        if not py:
+            return "Python isn't installed (Tamer Chat is a Python program). Install it from python.org, ticking \"Add to PATH\"."
+        missing = chat_missing_packages(py)
+        if missing is None:
+            return f"Couldn't run Python ({py})."
+        if missing:
+            return f"Python is missing {', '.join(missing)}. Use 'Install Python packages' in File > Tamer Chat."
+        return ""
+
+    def chat_start(self, reason=""):
+        """Start the bot. Returns "" or the reason it couldn't."""
+        with self.chat_lock:
+            if self.chat_running():
+                return ""
+            chat_sync(self.cfg)
+            problem = self.chat_problem()
+            if problem:
+                if problem != self.chat_error:
+                    self.chat_note(problem)
+                self.chat_error = problem
+                return problem
+            log = chat_log_path()
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            if os.path.isfile(log) and os.path.getsize(log) > 5 * 1024 * 1024:  # keep one older log
+                os.replace(log, log + ".old")
+            out = open(log, "a", encoding="utf-8")
+            args = dict(cwd=chat_dir(self.cfg), stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                        close_fds=True, env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+            cmd = [chat_python(self.cfg), "-u", CHAT_BOT_FILE]
+            try:  # like the servers: detached, so it keeps running when Tamer closes
+                self.chat_proc = subprocess.Popen(cmd, creationflags=DETACHED_FLAGS | (0x01000000 if IS_WINDOWS else 0), **args)
+            except OSError:
+                self.chat_proc = subprocess.Popen(cmd, creationflags=DETACHED_FLAGS, **args)
+            finally:
+                out.close()
+            self.chat_pid = self.chat_proc.pid
+            self.chat_error = ""
+            write_json_file(self.CHAT_PID_PATH, {"pid": self.chat_pid, "dir": chat_dir(self.cfg)})
+            self.chat_note(f"Tamer Chat bot started{' (' + reason + ')' if reason else ''} - PID {self.chat_pid}.")
+            return ""
+
+    def chat_stop(self, reason=""):
+        with self.chat_lock:
+            if self.chat_running():
+                kill_pid(self.chat_pid)
+                if self.chat_proc is not None:
+                    try:
+                        self.chat_proc.wait(10)
+                    except subprocess.TimeoutExpired:
+                        pass
+                self.chat_note(f"Tamer Chat bot stopped{' (' + reason + ')' if reason else ''}.")
+            self.chat_proc = self.chat_pid = None
+            try:
+                os.remove(self.CHAT_PID_PATH)
+            except OSError:
+                pass
+
+    def chat_adopt(self):
+        """Pick up a bot left running by an earlier Tamer (or by the window / background service)."""
+        info = read_json_file(self.CHAT_PID_PATH) or {}
+        pid = info.get("pid")
+        if self.chat_running() or not pid or not pid_alive(pid) or CHAT_BOT_FILE not in process_cmdline(pid):
+            return
+        self.chat_proc, self.chat_pid = None, pid
+        self.chat_note(f"Found the Tamer Chat bot already running (PID {pid}); now watching it.")
+
+    def _chat_tick(self, now):
+        with self.chat_lock:
+            want = self.cfg.data.get("chat_run")
+            running = self.chat_running()
+            if not want:
+                if running and self.chat_pid:
+                    self.chat_stop("switched off")
+                return
+            if running:
+                if now - self.chat_last_sync >= 30:
+                    self.chat_last_sync = now
+                    if chat_sync(self.cfg):
+                        self.chat_stop("the server list changed")
+                        self.chat_start("to pick up the new server list")
+                return
+            if self.chat_pid:  # it was running and has stopped by itself
+                code = self.chat_proc.poll() if self.chat_proc is not None else None
+                self.chat_proc = self.chat_pid = None
+                self.chat_crashes.append(now)
+                if sum(1 for t in self.chat_crashes if now - t < 600) >= 5:
+                    self.cfg.data["chat_run"] = False
+                    self.cfg.save()
+                    self.chat_error = "The bot stopped 5 times in 10 minutes, so Tamer stopped restarting it. Check its log."
+                    self.chat_note(self.chat_error)
+                    return
+                self.chat_note(f"The Tamer Chat bot stopped (exit code {code}). Starting it again...")
+                self.chat_retry_at = 0
+            if now >= self.chat_retry_at:
+                self.chat_retry_at = now + 60  # a missing token or package won't fix itself in 5 seconds
+                self.chat_start()
 
     def _sample_resources(self, s, rt, running, now):
         if not running or not rt.pid:
@@ -3355,6 +3515,145 @@ def asaapi_log_findings(s):
     lines = read_text_file(logs[0]).splitlines()
     rx = re.compile(r"\[(error|critical)\]|failed to load|requires newer api|does not exist|exception", re.I)
     return [ln.strip()[:220] for ln in lines if rx.search(ln)][-5:]
+
+
+# --------------------------------------------------------------------------------------
+# Tamer Chat: the Discord chat bot (tamer_chat.py, its own Python program) + its TamerChat AsaApi plugin
+# --------------------------------------------------------------------------------------
+CHAT_PLUGIN = "TamerChat"
+CHAT_BOT_FILE = "tamer_chat.py"
+CHAT_PACKAGES = {"discord": "discord.py", "dotenv": "python-dotenv", "aiohttp": "aiohttp"}  # import name -> pip name
+CHAT_ENV_FIELDS = [("DISCORD_TOKEN", "Discord bot token"), ("BRIDGE_CHANNEL_ID", "Chat channel ID"),
+                   ("ADMIN_CHANNEL_ID", "Admin channel ID (optional)"), ("ADMIN_ROLE_ID", "Admin role ID (optional)"),
+                   ("STATUS_CHANNEL_ID", "Status channel ID (optional)")]
+
+
+def chat_dir(cfg) -> str:
+    return cfg.data.get("chat_dir") or os.path.join(BASE_DIR, "Tamer_Chat")
+
+
+def chat_log_path() -> str:
+    return os.path.join(DATA_DIR, "logs", "tamer_chat.log")
+
+
+def chat_python(cfg) -> str:
+    """The Python that runs the bot. Tamer.exe can't run it itself, so the built app needs Python installed."""
+    if cfg.data.get("chat_python"):
+        return cfg.data["chat_python"]
+    if not getattr(sys, "frozen", False):
+        return sys.executable
+    for name in ("python", "py"):
+        found = shutil.which(name)
+        if found and "WindowsApps" not in found:  # the Microsoft Store stub only opens the Store
+            return found
+    return ""
+
+
+def env_read(path) -> dict:
+    out = {}
+    for line in read_text_file(path).splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+def env_write(path, values: dict):
+    """Set keys in a .env file, keeping its other lines and comments. Starts from .env.example if there's none."""
+    text = read_text_file(path) or read_text_file(os.path.join(os.path.dirname(path), ".env.example"))
+    lines, left = text.splitlines(), dict(values)
+    for i, line in enumerate(lines):
+        k = line.split("=", 1)[0].strip()
+        if "=" in line and not line.lstrip().startswith("#") and k in left:
+            lines[i] = f"{k}={left.pop(k)}"
+    lines += [f"{k}={v}" for k, v in left.items()]
+    write_text_file(path, "\n".join(lines) + "\n")
+
+
+def chat_plugin_dir(s, enabled_only=False):
+    """This server's installed TamerChat plugin folder, or None."""
+    p = asaapi_paths(s)
+    for base in (p["plugins"],) if enabled_only else (p["plugins"], p["disabled"]):
+        d = os.path.join(base, CHAT_PLUGIN)
+        if os.path.isfile(os.path.join(d, CHAT_PLUGIN + ".dll")):
+            return d
+    return None
+
+
+def chat_built_plugin(cfg):
+    """The plugin as built by Visual Studio (plugin\\out\\TamerChat), or None if it hasn't been built yet."""
+    d = os.path.join(chat_dir(cfg), "plugin", "out", CHAT_PLUGIN)
+    return d if os.path.isfile(os.path.join(d, CHAT_PLUGIN + ".dll")) else None
+
+
+def chat_servers(cfg) -> list:
+    """The bot's servers.json, made from Tamer's servers. "plugin" mode only where the plugin will actually load."""
+    return [{"name": s["name"], "host": cfg.data.get("rcon_host") or "127.0.0.1", "port": s["rcon_port"], "password": s["admin_password"],
+             "mode": "plugin" if s.get("asaapi") and chat_plugin_dir(s, enabled_only=True) else "rcon"}
+            for s in cfg.servers]
+
+
+def chat_sync(cfg) -> bool:
+    """Write the bot's servers.json and .env bridge settings, and each installed plugin's config.json, so they all
+    match Tamer's servers. Returns True if servers.json changed (the bot only reads it when it starts)."""
+    d = chat_dir(cfg)
+    if not os.path.isfile(os.path.join(d, CHAT_BOT_FILE)):
+        return False
+    with cfg.lock:
+        if not cfg.data.get("chat_key"):
+            cfg.data["chat_key"] = secrets.token_hex(16)
+            cfg.save()
+    key, port = cfg.data["chat_key"], int(cfg.data.get("chat_port") or 8765)
+    env_path = os.path.join(d, ".env")
+    want = {"SERVERS_FILE": "servers.json", "BRIDGE_KEY": key, "BRIDGE_HOST": "127.0.0.1", "BRIDGE_PORT": str(port)}
+    if not os.path.isfile(env_path) or any(env_read(env_path).get(k) != v for k, v in want.items()):
+        env_write(env_path, want)
+    for s in cfg.servers:
+        pd = chat_plugin_dir(s)
+        if pd:
+            path = os.path.join(pd, "config.json")
+            conf = read_json_file(path) or read_json_file(os.path.join(chat_dir(cfg), "plugin", "Configs", "config.json")) or {}
+            new = dict(conf, ServerName=s["name"], BridgeKey=key, BridgeUrl=f"http://127.0.0.1:{port}/ark/event")
+            if new != conf:
+                write_text_file(path, json.dumps(new, indent=2) + "\n")
+    servers_path = os.path.join(d, "servers.json")
+    text = json.dumps(chat_servers(cfg), indent=2) + "\n"
+    if read_text_file(servers_path).replace("\r\n", "\n") == text:
+        return False
+    write_text_file(servers_path, text)
+    return True
+
+
+def chat_missing_packages(python) -> list:
+    """pip names of the bot's packages this Python is missing ([] = ready). None if Python itself won't run."""
+    code = "import importlib.util as u; print(' '.join(n for n in %r if not u.find_spec(n)))" % (list(CHAT_PACKAGES),)
+    try:
+        res = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=60,
+                             creationflags=CREATE_NO_WINDOW)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode:
+        return None
+    return [CHAT_PACKAGES[n] for n in res.stdout.split()]
+
+
+def install_chat_plugin(cfg, s):
+    """Copy the built TamerChat plugin onto a server, keeping its config.json. Raises with a plain reason if it can't."""
+    src = chat_built_plugin(cfg)
+    if not src:
+        raise RuntimeError("The TamerChat plugin hasn't been built yet. Build plugin\\TamerChat.sln in Visual Studio "
+                           f"(see the Tamer Chat README); the result goes to {os.path.join(chat_dir(cfg), 'plugin', 'out', CHAT_PLUGIN)}.")
+    p = asaapi_paths(s)
+    dest = chat_plugin_dir(s) or os.path.join(p["plugins"], CHAT_PLUGIN)
+    os.makedirs(dest, exist_ok=True)
+    for name in os.listdir(src):
+        target = os.path.join(dest, name)
+        if name.lower() == "config.json" and os.path.exists(target):
+            continue  # keep this server's settings; chat_sync fills in the name and key
+        if os.path.isfile(os.path.join(src, name)):
+            shutil.copy2(os.path.join(src, name), target)
+    chat_sync(cfg)
 
 
 # --------------------------------------------------------------------------------------
@@ -4460,6 +4759,7 @@ class App:
                 self.root.bind(f"<Alt-KeyPress-{key}>", lambda e, b=btn: (self.root.tk.call("tk::MbPost", b), "break")[1])
         fm = tk.Menu(mb["File"], tearoff=False)
         fm.add_command(label="Settings...", command=self._settings_dialog)
+        fm.add_command(label="Tamer Chat (Discord chat bot)...", command=self._chat_dialog)
         fm.add_command(label="Update all servers...", command=self._update_all_dialog)
         fm.add_command(label="Broadcast to all servers...", command=self._broadcast_all)
         fm.add_command(label="Stagger restart times...", command=self._stagger_dialog)
@@ -5372,7 +5672,7 @@ class App:
         lf.pack(fill="both", expand=True, padx=6, pady=(0, 6))
         pb = FlowFrame(lf)
         pb.pack(side="bottom", fill="x", pady=(4, 0))
-        for text, cmd in [("Install plugin (.zip)...", self._plugin_install),
+        for text, cmd in [("Install plugin (.zip)...", self._plugin_install), ("Install Tamer Chat", self._chat_install),
                           ("Plugins folder", lambda: self._api_open("plugins")), ("Enable / disable", self._plugin_toggle),
                           ("Edit config", self._plugin_config), ("Selected plugin's folder", self._plugin_folder),
                           ("Reload now", self._plugin_reload), ("Remove", self._plugin_remove),
@@ -7282,6 +7582,203 @@ class App:
         ttk.Button(bb, text="Cancel", command=d.destroy).pack(side="right")
         ttk.Button(bb, text="Save", command=save, style="Accent.TButton").pack(side="right", padx=4)
         self.themed_window(d)
+
+    # ---- Tamer Chat ------------------------------------------------------------------
+    def _chat_dialog(self):
+        if getattr(self, "chat_win", None) is not None and self.chat_win.winfo_exists():
+            self.chat_win.lift()
+            return
+        d = self.chat_win = tk.Toplevel(self.root)
+        d.title("Tamer Chat")
+        d.transient(self.root)
+        outer = ttk.Frame(d, padding=10)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(1, weight=1)
+        data = self.cfg.data
+        ttk.Label(outer, text="Tamer Chat links your servers' chat with a Discord channel. It's a separate Python "
+                              "program; Tamer sets it up, keeps it running and restarts it if it stops.",
+                  style="Hint.TLabel", wraplength=640, justify="left").grid(row=0, column=0, columnspan=3, sticky="w")
+        dir_var = tk.StringVar(value=chat_dir(self.cfg))
+        py_var = tk.StringVar(value=data.get("chat_python", ""))
+        env = env_read(os.path.join(chat_dir(self.cfg), ".env"))
+        env_vars = {k: tk.StringVar(value=env.get(k, "")) for k, _ in CHAT_ENV_FIELDS}
+        r = 1
+        ttk.Label(outer, text="Tamer Chat folder").grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
+        ttk.Entry(outer, textvariable=dir_var, width=60).grid(row=r, column=1, sticky="ew", pady=3)
+        ttk.Button(outer, text="Browse...", command=lambda: self._browse_dir(dir_var)).grid(row=r, column=2, padx=4)
+        for key, label in CHAT_ENV_FIELDS:
+            r += 1
+            ttk.Label(outer, text=label).grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
+            e = ttk.Entry(outer, textvariable=env_vars[key], width=60, show="•" if key == "DISCORD_TOKEN" else "")
+            e.grid(row=r, column=1, sticky="ew", pady=3)
+            if key == "DISCORD_TOKEN":
+                show = tk.BooleanVar(value=False)
+                ttk.Checkbutton(outer, text="Show", variable=show,
+                                command=lambda e=e: e.configure(show="" if show.get() else "•")).grid(
+                    row=r, column=2, sticky="w", padx=4)
+        r += 1
+        ttk.Label(outer, text="Python (blank = find it)").grid(row=r, column=0, sticky="w", pady=3, padx=(0, 10))
+        ttk.Entry(outer, textvariable=py_var, width=60).grid(row=r, column=1, sticky="ew", pady=3)
+        r += 1
+        run_var = tk.BooleanVar(value=bool(data.get("chat_run")))
+        ttk.Checkbutton(outer, text="Keep the Tamer Chat bot running (starts with Tamer, restarts if it stops)",
+                        variable=run_var).grid(row=r, column=0, columnspan=3, sticky="w", pady=(6, 2))
+        r += 1
+        ttk.Label(outer, text="Channel and role IDs: in Discord, turn on Developer Mode (User Settings > Advanced), then "
+                              "right-click the channel or role > Copy ID. Tamer fills in servers.json, the shared plugin "
+                              "key and each server's TamerChat plugin settings for you. Other bot settings are in .env.",
+                  style="Hint.TLabel", wraplength=640, justify="left").grid(row=r, column=0, columnspan=3, sticky="w")
+        r += 1
+        status = ttk.Label(outer, text="", style="Status.TLabel")
+        status.grid(row=r, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        r += 1
+        problem = ttk.Label(outer, text="", style="Warn.TLabel", wraplength=640, justify="left")
+        problem.grid(row=r, column=0, columnspan=3, sticky="w")
+        r += 1
+        logf = ttk.LabelFrame(outer, text="Bot log", padding=4)
+        logf.grid(row=r, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
+        outer.rowconfigure(r, weight=1)
+        logtxt = tk.Text(logf, height=12, width=90, wrap="none", font=("Consolas", 9), state="disabled")
+        logtxt.pack(fill="both", expand=True)
+
+        def save(quiet=False):
+            folder = dir_var.get().strip()
+            for key, label in CHAT_ENV_FIELDS:
+                val = env_vars[key].get().strip()
+                if key != "DISCORD_TOKEN" and val and not val.isdigit():
+                    messagebox.showerror(APP_NAME, f"{label} should be a number (Discord's Copy ID).", parent=d)
+                    return False
+            if not os.path.isfile(os.path.join(folder, CHAT_BOT_FILE)):
+                messagebox.showerror(APP_NAME, f"There's no {CHAT_BOT_FILE} in that folder. Pick the Tamer Chat folder.",
+                                     parent=d)
+                return False
+            data["chat_dir"] = "" if os.path.normcase(os.path.abspath(folder)) == os.path.normcase(
+                os.path.join(BASE_DIR, "Tamer_Chat")) else folder
+            data["chat_python"] = py_var.get().strip()
+            data["chat_run"] = run_var.get()
+            self.cfg.save()
+            env_write(os.path.join(folder, ".env"), {k: v.get().strip() for k, v in env_vars.items()})
+            chat_sync(self.cfg)
+            self.mgr.chat_retry_at = 0  # try again straight away with the new settings
+            if not quiet:
+                threading.Thread(target=self.mgr._chat_tick, args=(time.time(),), daemon=True).start()
+            return True
+
+        def restart():
+            if save(quiet=True):
+                def work():
+                    self.mgr.chat_stop("restarted from the Tamer Chat window")
+                    err = self.mgr.chat_start()
+                    if err:
+                        self.q.put(("error", None, f"Tamer Chat didn't start:\n\n{err}"))
+                threading.Thread(target=work, daemon=True).start()
+
+        def stop():
+            run_var.set(False)
+            if save(quiet=True):
+                threading.Thread(target=self.mgr.chat_stop, args=("stopped from the Tamer Chat window",),
+                                 daemon=True).start()
+
+        def packages():
+            if not save(quiet=True):
+                return
+            py = chat_python(self.cfg)
+            if not py:
+                messagebox.showerror(APP_NAME, "Python isn't installed. Get it from python.org (tick \"Add to PATH\"), "
+                                               "then try again.", parent=d)
+                return
+            req = os.path.join(chat_dir(self.cfg), "requirements.txt")
+            if not messagebox.askyesno(APP_NAME, f"Download and install the packages Tamer Chat needs "
+                                                 f"({', '.join(CHAT_PACKAGES.values())}) into\n{py}?", parent=d):
+                return
+
+            def work():
+                self.mgr.chat_note("Installing Python packages for Tamer Chat...")
+                try:
+                    res = subprocess.run([py, "-m", "pip", "install", "-r", req], capture_output=True, text=True,
+                                         timeout=900, creationflags=CREATE_NO_WINDOW)
+                    tail = (res.stdout + res.stderr).strip().splitlines()[-6:]
+                    ok = res.returncode == 0
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    tail, ok = [str(e)], False
+                self.mgr.chat_note(("Packages installed." if ok else "Installing packages failed:") + "\n" + "\n".join(tail))
+                self.q.put(("info" if ok else "error", None, "Tamer Chat's packages are installed." if ok else
+                            "Installing the packages failed - see the bot log in the Tamer Chat window."))
+            threading.Thread(target=work, daemon=True).start()
+
+        def open_env():
+            if save(quiet=True):
+                open_path(os.path.join(chat_dir(self.cfg), ".env"))
+
+        bb = FlowFrame(outer)
+        bb.grid(row=r + 1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        for text, cmd, style in [("Save", lambda: save() and None, "Accent.TButton"),
+                                 ("Start / restart bot", restart, "TButton"), ("Stop bot", stop, "TButton"),
+                                 ("Install Python packages", packages, "TButton"),
+                                 ("Open .env (all settings)", open_env, "TButton"), ("Close", d.destroy, "TButton")]:
+            bb.add(ttk.Button(bb, text=text, command=cmd, style=style))
+
+        last = [None]
+
+        def refresh():
+            if not d.winfo_exists():
+                return
+            running = self.mgr.chat_running()
+            status.configure(text=f"Bot running (PID {self.mgr.chat_pid})" if running else "Bot stopped",
+                             foreground=self.colors["good"] if running else self.colors["muted"])
+            problem.configure(text="" if running else self.mgr.chat_error)
+            try:
+                with open(chat_log_path(), "r", encoding="utf-8", errors="replace") as f:
+                    tail = "".join(collections.deque(f, maxlen=200))
+            except OSError:
+                tail = "(no log yet)"
+            if tail != last[0]:
+                last[0] = tail
+                logtxt.configure(state="normal")
+                logtxt.delete("1.0", "end")
+                logtxt.insert("end", tail)
+                logtxt.see("end")
+                logtxt.configure(state="disabled")
+            d.after(2000, refresh)
+
+        self.themed_window(d)
+        refresh()
+
+    def _chat_install(self):
+        """Plugins tab: put the TamerChat plugin on this server or on all of them."""
+        s = self._need()
+        if not s:
+            return
+        if not chat_built_plugin(self.cfg):
+            messagebox.showinfo(APP_NAME, "The TamerChat plugin hasn't been built yet.\n\nIt has to be built once with "
+                                          "Visual Studio (see the Tamer Chat README, Part 1). Until then, Tamer Chat "
+                                          "still works over RCON without the plugin.")
+            return
+        many = len(self.cfg.servers) > 1
+        ans = messagebox.askyesnocancel(APP_NAME, "Install the TamerChat plugin on ALL servers?\n\nYes = all servers, "
+                                                  f"No = only {s['name']}") if many else True
+        if ans is None:
+            return
+        targets = self.cfg.servers if ans and many else [s]
+        done, errors = [], []
+        for t in targets:
+            if self.mgr.is_running(t):
+                errors.append(f"{t['name']}: stop the server first (the plugin file is in use while it runs).")
+                continue
+            try:
+                install_chat_plugin(self.cfg, t)
+                self.mgr.log(t, "TamerChat plugin installed (its name and key are filled in for you).")
+                done.append(t["name"])
+            except Exception as e:
+                errors.append(f"{t['name']}: {e}")
+        self._refresh_plugins()
+        msg = (f"TamerChat installed on: {', '.join(done)}." if done else "") + \
+              ("\n\nProblems:\n" + "\n".join(errors) if errors else "")
+        if done:
+            msg += "\n\nIt loads the next time those servers start with AsaApi on."
+            if self.cfg.data.get("chat_run"):
+                msg += " The bot switches them to plugin mode by itself."
+        (messagebox.showerror if errors and not done else messagebox.showinfo)(APP_NAME, msg.strip())
 
     # ---- timed messages & commands ----------------------------------------------
     def _tab_tasks(self):
