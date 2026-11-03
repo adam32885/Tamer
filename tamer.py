@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.14.0"
+APP_VERSION = "1.14.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -4150,11 +4150,13 @@ class ScrollFrame(ttk.Frame):
         super().__init__(parent, **kw)
         bg = ttk.Style().lookup("TFrame", "background") or None
         self.canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0, background=bg)
-        vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        vsb = ttk.Scrollbar(self, orient="vertical", command=lambda *a: self.fits() or self.canvas.yview(*a))
         self.inner = ttk.Frame(self.canvas)
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.inner.bind("<Configure>", lambda e: (self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+                                                  self._top_if_fits()))
         win = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(win, width=e.width))
+        self.canvas.bind("<Configure>", lambda e: (self.canvas.itemconfigure(win, width=e.width),
+                                                   self._top_if_fits()))
         self.canvas.configure(yscrollcommand=vsb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         vsb.pack(side="right", fill="y")
@@ -4163,6 +4165,15 @@ class ScrollFrame(ttk.Frame):
             ScrollFrame._wheel_installed = True
 
     _wheel_installed = False
+
+    def fits(self):
+        """True when the whole page is showing, so there's nothing to scroll."""
+        return self.inner.winfo_reqheight() <= self.canvas.winfo_height()
+
+    def _top_if_fits(self):
+        # Tk lets a page shorter than the canvas slide down inside it, leaving a gap at the top
+        if self.fits():
+            self.canvas.yview_moveto(0)
 
     @staticmethod
     def _on_wheel(e):
@@ -4174,6 +4185,8 @@ class ScrollFrame(ttk.Frame):
             if isinstance(w, (tk.Text, ttk.Treeview, ttk.Combobox)):
                 return
             if isinstance(w, ScrollFrame):
+                if w.fits():
+                    return
                 step = int(-e.delta / 120) or (-1 if e.delta > 0 else 1)
                 w.canvas.yview_scroll(step, "units")
                 return
