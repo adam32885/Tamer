@@ -53,7 +53,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.15.1"
+APP_VERSION = "1.15.2"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -66,6 +66,7 @@ GAMELOG_REL = os.path.join("ShooterGame", "Saved", "Logs", "ShooterGame.log")
 STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
 BUILD_API_URL = f"https://api.steamcmd.net/v1/info/{ASA_APP_ID}"
 DOCS_URL = "https://ark.wiki.gg/wiki/Server_configuration"
+KOFI_URL = "https://ko-fi.com/tamerarkmanager"
 
 # CurseForge (ASA mods). A free personal API key from console.curseforge.com is recommended;
 # without one the manager falls back to the unofficial curse.tools proxy.
@@ -4159,6 +4160,8 @@ def recolor_tk_widgets(widget, c):
                             activeforeground=c["fg"])
             elif getattr(w, "is_menubar", False):
                 w.configure(background=c["bg"])
+            elif getattr(w, "is_link", False):  # the Ko-fi link on the menu bar
+                w.configure(background=c["bg"], foreground=c["accent"])
             elif isinstance(w, ttk.Combobox):
                 pd = w.tk.call("ttk::combobox::PopdownWindow", w)
                 w.tk.call(f"{pd}.f.l", "configure", "-background", c["field"], "-foreground", c["fg"],
@@ -4481,7 +4484,16 @@ class App:
                       "An unofficial server manager for ARK: Survival Ascended.\n"
                       "Not affiliated with or endorsed by Studio Wildcard.\n\n"
                       f"Data folder: {DATA_DIR}"))
+        hm.add_command(label="Support Tamer on Ko-fi", command=lambda: webbrowser.open(KOFI_URL))
         mb["Help"]["menu"] = hm
+        # top-right corner: a small link to the Ko-fi page
+        kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=("Segoe UI", 9, "bold"))
+        kofi.is_link = True
+        kofi.pack(side="right")
+        kofi.bind("<Button-1>", lambda e: webbrowser.open(KOFI_URL))
+        kofi.bind("<Enter>", lambda e: kofi.configure(font=("Segoe UI", 9, "bold", "underline")))
+        kofi.bind("<Leave>", lambda e: kofi.configure(font=("Segoe UI", 9, "bold")))
+        self.kofi_link = kofi
         recolor_tk_widgets(bar, self.colors)
 
     def _layout(self):

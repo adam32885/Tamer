@@ -4,6 +4,8 @@
 
 *Tamer is an unofficial tool. It isn't affiliated with or endorsed by Studio Wildcard.*
 
+Tamer is free. If it saves you time, you can support it on **[Ko-fi](https://ko-fi.com/tamerarkmanager)**. There's a **☕ Support Tamer** link in the top-right corner of the window, and another under **Help**.
+
 ## Install
 Run **`Tamer-Setup-<version>.exe`**. It installs Tamer just for you, with no admin prompt, into `C:\Users\<you>\AppData\Local\Programs\Tamer`, and adds it to the Start menu. Tick boxes in the installer add a desktop shortcut and start Tamer when you sign in to Windows. You don't need Python for the installed version.
 - **Windows says "Windows protected your PC"?** The installer isn't code-signed yet. Click **More info**, then **Run anyway**.
