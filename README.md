@@ -4,6 +4,8 @@
 
 <p align="center">A free Windows app for running <b>ARK: Survival Ascended</b> dedicated servers and clusters, without the command lines and batch files.</p>
 
+<p align="center"><i>Tamer is built with Claude, Anthropic's AI. Ideas, testing and decisions by InternalDark.</i></p>
+
 <p align="center"><a href="https://github.com/adam32885/Tamer/releases/latest"><b>⬇ Download Tamer for Windows</b></a> &nbsp;·&nbsp; <a href="CHANGELOG.md">What's new</a> &nbsp;·&nbsp; <a href="https://ko-fi.com/tamerarkmanager">☕ Support Tamer</a> &nbsp;·&nbsp; <a href="https://discord.gg/nj7tkY53gq">💬 Get help on Discord</a></p>
 
 ![Tamer's main window, with three servers](docs/screenshots/main.png)
