@@ -27,10 +27,34 @@ def server_list_fits():
     assert app.nb.winfo_width() >= tabs, ("tab names cut off", app.nb.winfo_width(), tabs)
     print("server list:", app.tree.winfo_width(), "px wide (columns need", total, ") | tabs:", app.nb.winfo_width(),
           "px for", tabs)
+def installed_rows():
+    """How many mods the Mods tab's installed list shows without scrolling (filled with 20 pretend rows)."""
+    app.nb.select(names.index("Mods")); root.update()
+    t = app.itree; old = t.get_children(); t.detach(*old)
+    rows = [t.insert("", "end", text="", values=(f"Mod {n}", str(n), "2026-01-01")) for n in range(20)]
+    root.update()
+    top = next((y for y in range(t.winfo_height()) if t.identify_row(y)), None)  # where the first row starts
+    rh = int(am.ttk.Style().lookup("Treeview", "rowheight"))
+    shown = 0 if top is None else (t.winfo_height() - top) // rh  # whole rows only
+    t.delete(*rows)
+    for n, r in enumerate(old):
+        t.reattach(r, "", n)
+    return shown
+def mods_list_fits():
+    """The installed mods list (the whole right column) isn't squeezed to a row or two: on a laptop-size window
+    (1366x768) at least 8 show at Large (the default) and 6 at Larger, on the tiny test window (1100x700 at 125%) 3 and 2."""
+    large = installed_rows()
+    am.set_text_scale(1.25); app.apply_theme(); root.update()
+    larger = installed_rows()
+    am.set_text_scale(am.text_scale_of(app.cfg)); app.apply_theme(); root.update()
+    print("installed mods shown: Large", large, "| Larger", larger)
+    need = (8, 6) if W >= 1366 and SCALE <= 1 else (3, 2)
+    assert large >= need[0] and larger >= need[1], ("installed mods list squeezed", large, larger, "need", need)
 def step(i=0):
     if i == 0:
         try:
             server_list_fits()
+            mods_list_fits()
         except AssertionError as e:  # report it and stop, rather than leaving the window open
             errors.append(e); print("FAILED:", e); app.mgr.stop_event.set(); root.destroy(); return
     if i >= len(names):

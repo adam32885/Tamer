@@ -3,3 +3,6 @@ contact_links:
   - name: How do I...? (the guide)
     url: https://github.com/adam32885/Tamer#readme
     about: Setting up servers, mods, clusters, backups and more is explained in the README.
+  - name: Ask on Discord
+    url: https://discord.gg/nj7tkY53gq
+    about: Questions and help from other Tamer users.

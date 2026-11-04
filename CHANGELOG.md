@@ -2,6 +2,10 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.21.1
+- **Tamer now has a Discord** for questions and help: https://discord.gg/nj7tkY53gq. Open it with the **💬 Get help on Discord** link under **☕ Support Tamer** in the top-right corner, or **Help > Get help on Discord**.
+- The Mods tab's **installed list is no longer squeezed** to a row or two on smaller windows and bigger text. It now has the whole right side to itself. **Details** moved under the search results (drag the line between them to resize), and the tip about restarting and passive mods shows in the Details box until you pick a mod. The Up / Down buttons are now **▲ / ▼**.
+
 ## 1.21.0
 - **Rearrange your servers:** drag them up or down in the list, or use the **▲ / ▼** arrows next to "Servers" (or Ctrl+Up / Ctrl+Down). The order is saved, and Start all, Update all and auto-start follow it.
 - Fixed: updating could stop with "DeleteFile failed; code 5. Access is denied" because Tamer was still running. It might be waiting on a question, sitting in the tray, or running as the background service. Now Tamer closes without asking anything when it updates, and stops the background service first (letting a running backup or update finish). The installer also closes any Tamer.exe still running from its folder, then starts the background service again if it's installed. This also fixes updates started from older versions.

@@ -4,7 +4,7 @@
 
 <p align="center">A free Windows app for running <b>ARK: Survival Ascended</b> dedicated servers and clusters, without the command lines and batch files.</p>
 
-<p align="center"><a href="https://github.com/adam32885/Tamer/releases/latest"><b>⬇ Download Tamer for Windows</b></a> &nbsp;·&nbsp; <a href="CHANGELOG.md">What's new</a> &nbsp;·&nbsp; <a href="https://ko-fi.com/tamerarkmanager">☕ Support Tamer</a></p>
+<p align="center"><a href="https://github.com/adam32885/Tamer/releases/latest"><b>⬇ Download Tamer for Windows</b></a> &nbsp;·&nbsp; <a href="CHANGELOG.md">What's new</a> &nbsp;·&nbsp; <a href="https://ko-fi.com/tamerarkmanager">☕ Support Tamer</a> &nbsp;·&nbsp; <a href="https://discord.gg/nj7tkY53gq">💬 Get help on Discord</a></p>
 
 ![Tamer's main window, with three servers](docs/screenshots/main.png)
 
@@ -25,6 +25,8 @@
 *Tamer is an unofficial tool. It isn't affiliated with or endorsed by Studio Wildcard.*
 
 Tamer is free. If it saves you time, you can support it on **[Ko-fi](https://ko-fi.com/tamerarkmanager)**. There's a **☕ Support Tamer** link in the top-right corner of the window, and another under **Help**. Tamer is open source under the [MIT licence](LICENSE).
+
+Questions? Ask on the **[Tamer Discord](https://discord.gg/nj7tkY53gq)**. There's a **💬 Get help on Discord** link under the Ko-fi one in the top-right corner, and another under **Help**.
 
 ## Install
 Run **`Tamer-Setup-<version>.exe`**. It installs Tamer just for you, with no admin prompt, into `C:\Users\<you>\AppData\Local\Programs\Tamer`, and adds it to the Start menu. Tick boxes in the installer add a desktop shortcut and start Tamer when you sign in to Windows. You don't need Python for the installed version.
@@ -88,7 +90,7 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 - **Mods tab**: search CurseForge's ARK: Survival Ascended mods by name. You can sort by popularity, last update, downloads or name, and read each mod's details.
   - **Install** adds a mod to the selected server. **Install on cluster** adds it to every server in the cluster. Double-clicking a result also installs it.
   - The server downloads and updates its mods automatically when it starts. If the server is running, Tamer offers a restart with player warnings.
-  - The installed list sets the load order (Up/Down) and lets you remove mods. **Add by ID** takes the "Project ID" from a mod's CurseForge page.
+  - The installed list, on the right, sets the load order (the **▲ / ▼** buttons) and lets you remove mods. The **Details** box under the search results shows the mod you picked in either list; drag the line above it to resize it. **Add by ID** takes the "Project ID" from a mod's CurseForge page.
   - Map mods: after installing one, set the Map field on the Server tab to the map name given on the mod's page.
   - Search works without setup through a free community proxy (api.curse.tools). For faster, more reliable searches, get a free personal key at https://console.curseforge.com/ and paste it under **File > Settings > CurseForge API key**.
   - Click **Test key** to check it. If CurseForge rejects your key, Tamer says so and keeps searching through the free proxy. Copy the key again from the console or generate a new one there.
@@ -307,7 +309,7 @@ The **Plugins** tab installs and manages **AsaApi**, the community server-plugin
 - After an ARK update, AsaApi and plugins sometimes need updates too. If a server stops starting, untick **Start this server with AsaApi** until they catch up.
 
 ## Reporting a problem
-Use **Help > Send a bug report...**. Tamer saves one zip file, on your Desktop by default, with:
+For a quick question, ask on the [Tamer Discord](https://discord.gg/nj7tkY53gq) (**Help > Get help on Discord**). For a bug, use **Help > Send a bug report...**. Tamer saves one zip file, on your Desktop by default, with:
 - Tamer's version, your Windows version, and a summary of each server;
 - Tamer's settings and logs;
 - each server's `ShooterGame.log` (the last 500 lines), if you tick the box. It can contain player names.

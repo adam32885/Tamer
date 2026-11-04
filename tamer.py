@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.21.0"
+APP_VERSION = "1.21.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -68,6 +68,7 @@ STEAMCMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
 BUILD_API_URL = f"https://api.steamcmd.net/v1/info/{ASA_APP_ID}"
 DOCS_URL = "https://ark.wiki.gg/wiki/Server_configuration"
 KOFI_URL = "https://ko-fi.com/tamerarkmanager"
+DISCORD_URL = "https://discord.gg/nj7tkY53gq"
 TAMER_REPO = "adam32885/Tamer"
 TAMER_RELEASE_API = os.environ.get("ASM_TAMER_API", f"https://api.github.com/repos/{TAMER_REPO}/releases/latest")
 TAMER_RELEASES_PAGE = f"https://github.com/{TAMER_REPO}/releases"
@@ -4754,7 +4755,7 @@ def recolor_tk_widgets(widget, c):
                             activeforeground=c["fg"])
             elif getattr(w, "is_menubar", False):
                 w.configure(background=c["bg"])
-            elif getattr(w, "is_link", False):  # the Ko-fi link on the menu bar
+            elif getattr(w, "is_link", False):  # the Ko-fi and Discord links on the menu bar
                 w.configure(background=c["bg"], foreground=c["accent"])
             elif getattr(w, "is_quiet_link", False):  # "Check for updates"
                 w.configure(background=c["bg"], foreground=c["muted"])
@@ -5032,6 +5033,7 @@ class App:
         self.task_tree.tag_configure("off", foreground=c["off"])
         self.plugin_tree.tag_configure("off", foreground=c["off"])
         self.itree.tag_configure("passive", foreground=c["muted"])
+        self.mod_details.tag_configure("hint", foreground=c["muted"])
         self._mod_mode_layout()
         self._refresh_installed_mods()
         self.plugin_tree.tag_configure("bad", foreground=c["bad"])
@@ -5456,10 +5458,10 @@ class App:
                 if newer:  # the green update link takes the place of "Check for updates"
                     self.check_link.pack_forget()
                     self.update_link.configure(text=f"⬆ Update to {rel['version']}")
-                    self.update_link.pack(side="right", after=self.kofi_link)  # packed after = further left
+                    self.update_link.pack(side="right", after=self.corner_links)  # packed after = further left
                 else:
                     self.update_link.pack_forget()
-                    self.check_link.pack(side="right", after=self.kofi_link)
+                    self.check_link.pack(side="right", after=self.corner_links)
                 if manual:
                     if newer:
                         self._tamer_update_dialog()
@@ -5638,18 +5640,24 @@ class App:
                       "Not affiliated with or endorsed by Studio Wildcard.\n\n"
                       f"Data folder: {DATA_DIR}"))
         hm.add_command(label="Support Tamer on Ko-fi", command=lambda: webbrowser.open(KOFI_URL))
+        hm.add_command(label="Get help on Discord", command=lambda: webbrowser.open(DISCORD_URL))
         hm.add_command(label="Check for Tamer updates now", command=lambda: self._tamer_update_check(manual=True))
         hm.add_command(label="Run the welcome again (set up a server)...", command=self._welcome)
         hm.add_command(label="Send a bug report...", command=self._bug_report_dialog)
         mb["Help"]["menu"] = hm
-        # top-right corner: a small link to the Ko-fi page
-        kofi = tk.Label(bar, text="☕ Support Tamer", cursor="hand2", padx=10, font=ui_font("Segoe UI", 9, "bold"))
-        kofi.is_link = True
-        kofi.pack(side="right")
-        kofi.bind("<Button-1>", lambda e: webbrowser.open(KOFI_URL))
-        kofi.bind("<Enter>", lambda e: kofi.configure(font=ui_font("Segoe UI", 9, "bold", "underline")))
-        kofi.bind("<Leave>", lambda e: kofi.configure(font=ui_font("Segoe UI", 9, "bold")))
-        self.kofi_link = kofi
+        # top-right corner: small links to the Ko-fi page and, under it, the Discord
+        links = tk.Frame(bar)
+        links.is_menubar = True  # same background as the bar
+        links.pack(side="right")
+        self.corner_links = links
+        for text, url in (("☕ Support Tamer", KOFI_URL), ("💬 Get help on Discord", DISCORD_URL)):
+            link = tk.Label(links, text=text, cursor="hand2", padx=10, pady=0, font=ui_font("Segoe UI", 9, "bold"))
+            link.is_link = True
+            link.pack(side="top", anchor="e")
+            link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
+            link.bind("<Enter>", lambda e, w=link: w.configure(font=ui_font("Segoe UI", 9, "bold", "underline")))
+            link.bind("<Leave>", lambda e, w=link: w.configure(font=ui_font("Segoe UI", 9, "bold")))
+        self.kofi_link, self.discord_link = links.winfo_children()
         # shown next to it when a newer Tamer is out (see _tamer_update_check)
         upd = tk.Label(bar, text="", cursor="hand2", padx=10, font=ui_font("Segoe UI", 9, "bold"))
         upd.is_link = True
@@ -5661,7 +5669,7 @@ class App:
         # in the same spot while there's no update to offer: check by hand
         chk = tk.Label(bar, text="Check for updates", cursor="hand2", padx=10, font=ui_font("Segoe UI", 9))
         chk.is_quiet_link = True
-        chk.pack(side="right", after=kofi)
+        chk.pack(side="right", after=links)
         chk.bind("<Button-1>", lambda e: self._tamer_update_check(manual=True))
         chk.bind("<Enter>", lambda e: chk.configure(font=ui_font("Segoe UI", 9, "underline")))
         chk.bind("<Leave>", lambda e: chk.configure(font=ui_font("Segoe UI", 9)))
@@ -6197,8 +6205,11 @@ class App:
         pw = ttk.PanedWindow(tab, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
-        left = ttk.LabelFrame(pw, text="Search results", padding=6)
-        pw.add(left, weight=1)
+        # left: search results over Details (draggable divider); right: the installed list, full height
+        lp = ttk.PanedWindow(pw, orient="vertical")
+        pw.add(lp, weight=1)
+        left = ttk.LabelFrame(lp, text="Search results", padding=6)
+        lp.add(left, weight=3)
         cols = ("author", "downloads", "updated")
         self.mtree = ttk.Treeview(left, columns=cols, show="tree headings", selectmode="extended", height=3)
         self.mtree.heading("#0", text="Mod")
@@ -6227,21 +6238,22 @@ class App:
         self.mtree.bind("<<TreeviewSelect>>", lambda ev: self._mod_show_details(self.mtree))
         self.mtree.bind("<Double-1>", lambda ev: self._mod_install(False))
 
-        right = ttk.Frame(pw)
-        pw.add(right, weight=1)
-        initial_sash(pw, 0.58)
-        mod_hint = ttk.Label(right, text="The server downloads and updates its mods automatically when it starts, "
-                                         "so restart it after adding, removing or switching mods. "
-                                         "A passive mod keeps its data but has its features off.",
-                             style="Hint.TLabel", wraplength=300, justify="left")
-        mod_hint.pack(side="bottom", anchor="w", pady=(6, 0))
-        right.bind("<Configure>", lambda e: mod_hint.configure(wraplength=max(120, e.width - 8)), add="+")
-        df = ttk.LabelFrame(right, text="Details", padding=6)
-        df.pack(fill="x")
-        self.mod_details = tk.Text(df, height=5, width=30, wrap="word", font=ui_font("Segoe UI", 9), relief="flat", state="disabled")
-        self.mod_details.pack(fill="x")
-        inf = ttk.LabelFrame(right, text="Installed on this server (load order)", padding=6)
-        inf.pack(fill="both", expand=True, pady=(6, 0))
+        df = ttk.LabelFrame(lp, text="Details", padding=6)
+        lp.add(df, weight=1)  # when the window shrinks, both give up room, not just the search results
+        self.mod_details = tk.Text(df, height=3, width=30, wrap="word", font=ui_font("Segoe UI", 9), relief="flat", state="disabled")
+        self.mod_details.pack(fill="both", expand=True)
+        # until a mod is picked, the Details box holds the hint (a line of its own would squeeze the lists)
+        self.mod_details.tag_configure("hint", foreground=self.colors["muted"])
+        self.mod_details.configure(state="normal")
+        self.mod_details.insert("1.0", "Pick a mod to see its details.\nMods download and update when the server "
+                                       "starts, so restart it after changes. Passive = the mod's data stays, "
+                                       "its features are off.", "hint")
+        self.mod_details.configure(state="disabled")
+        # Details gets the height it asks for, but never more than 45% of the column
+        initial_sash(lp, 1.0, hi=lambda size: max(size * 0.55, size - df.winfo_reqheight()))
+        inf = ttk.LabelFrame(pw, text="Installed on this server (load order)", padding=6)
+        pw.add(inf, weight=1)
+        initial_sash(pw, 0.5)
         self.itree = ttk.Treeview(inf, columns=("name", "id", "updated"), show="tree headings", selectmode="browse",
                                   height=3, style="Mods.Treeview")
         self._mod_mode_layout()
@@ -6255,10 +6267,10 @@ class App:
         ib = FlowFrame(inf)
         ib.pack(side="bottom", fill="x", pady=(4, 0))
         for text, cmd in [("Remove", self._mod_remove),
-                          ("Up", lambda: self._mod_move(-1)),
-                          ("Down", lambda: self._mod_move(1)), ("Open page", lambda: self._mod_open(self.itree)),
+                          ("▲", lambda: self._mod_move(-1)),
+                          ("▼", lambda: self._mod_move(1)), ("Open page", lambda: self._mod_open(self.itree)),
                           ("Refresh", lambda: self._mod_fetch_info(force=True))]:
-            ib.add(ttk.Button(ib, text=text, command=cmd))
+            ib.add(ttk.Button(ib, text=text, command=cmd, width=3 if len(text) == 1 else None))
         self.itree.pack(fill="both", expand=True)
         self.itree.bind("<<TreeviewSelect>>", lambda ev: self._mod_show_details(self.itree))
         self.itree.bind("<ButtonRelease-1>", self._mod_mode_cell_click, add="+")
@@ -6345,7 +6357,7 @@ class App:
                                            + (f"Categories: {cats}\n" if cats else "")
                                            + f"\n{m.get('summary', '')}")
         else:
-            self.mod_details.insert("1.0", f"Mod ID {sel[0]}\n\nNo details loaded yet - click 'Refresh info'.")
+            self.mod_details.insert("1.0", f"Mod ID {sel[0]}\n\nNo details loaded yet - click 'Refresh'.")
         self.mod_details.configure(state="disabled")
 
     def _mod_targets(self, cluster):

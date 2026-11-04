@@ -1,4 +1,4 @@
-"""The Ko-fi link in the top-right corner and in the Help menu opens the Ko-fi page, and follows the theme."""
+"""The Ko-fi and Discord links in the top-right corner and in the Help menu open their pages, and follow the theme."""
 import sys
 sys.path.insert(0, sys.argv[1]); import tamer as am; import tkinter as tk
 cfg = am.AppConfig(); cfg.data["theme"] = "dark"; cfg.save()
@@ -23,8 +23,23 @@ def a():
     labels = [hm.entrycget(i, "label") for i in range(hm.index("end") + 1) if hm.type(i) == "command"]
     hm.invoke(labels.index("Support Tamer on Ko-fi"))
     assert opened[-1] == am.KOFI_URL, opened
+    # the Discord link sits right under the Ko-fi one, and below it in the Help menu
+    dc = app.discord_link
+    assert dc.cget("text") == "💬 Get help on Discord"
+    assert dc.winfo_ismapped() and dc.winfo_rooty() > link.winfo_rooty(), "under the Ko-fi link"
+    assert dc.winfo_rootx() + dc.winfo_width() == link.winfo_rootx() + link.winfo_width(), "right edges line up"
+    assert str(dc.cget("foreground")) == am.THEMES["dark"]["accent"], dc.cget("foreground")
+    dc.event_generate("<Enter>"); root.update()
+    assert "underline" in str(dc.cget("font")), "underlined on hover"
+    dc.event_generate("<Leave>"); dc.event_generate("<Button-1>"); root.update()
+    assert opened[-1] == am.DISCORD_URL == "https://discord.gg/nj7tkY53gq", opened
+    assert labels.index("Get help on Discord") == labels.index("Support Tamer on Ko-fi") + 1, labels
+    opened.clear(); hm.invoke(labels.index("Get help on Discord"))
+    assert opened == [am.DISCORD_URL], opened
     app.cfg.data["theme"] = "light"; app.apply_theme(); root.update()
     assert str(link.cget("foreground")) == am.THEMES["light"]["accent"], "follows a live theme switch"
+    assert str(dc.cget("foreground")) == am.THEMES["light"]["accent"], "follows a live theme switch"
+    assert str(dc.master.cget("background")) == am.THEMES["light"]["bg"], "the links' frame matches the bar"
     app.mgr.stop_event.set(); root.destroy()
 
 
