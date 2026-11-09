@@ -2,6 +2,9 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.22.0
+- **Admins without enablecheats:** a new **Admins** list on the Players tab. Players on it get admin powers as soon as they join. Pick an online player and click **Make admin**, or add someone by their EOS ID. Cluster servers share one list; a server outside the cluster has its own. Tamer writes ARK's `AllowedCheaterAccountIDs.txt` for you, and keeps any admins already in it. Changes work after the server's next restart.
+
 ## 1.21.1
 - **Tamer now has a Discord** for questions and help: https://discord.gg/nj7tkY53gq. Open it with the **💬 Get help on Discord** link under **☕ Support Tamer** in the top-right corner, or **Help > Get help on Discord**.
 - The Mods tab's **installed list is no longer squeezed** to a row or two on smaller windows and bigger text. It now has the whole right side to itself. **Details** moved under the search results (drag the line between them to resize), and the tip about restarting and passive mods shows in the Details box until you pick a mod. The Up / Down buttons are now **▲ / ▼**.

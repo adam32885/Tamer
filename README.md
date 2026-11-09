@@ -19,6 +19,7 @@
 - **Backups** on a timer, with a second copy on another drive or the cloud.
 - **Game settings** form, **mod settings** editor and full INI editors, plus a **launch options** builder.
 - **AsaApi plugins:** install AsaApi and plugins in one click.
+- **An admin list**, so your admins have their powers as soon as they join, without `enablecheats`.
 - **Discord alerts**, timed in-game messages, a **troubleshooter** that reads the logs for you, connectivity checks, and performance graphs.
 - **Runs in the background** (tray and Windows service), with light and dark themes, and **updates itself**.
 
@@ -88,6 +89,11 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
   - **Mod settings** lists the mods' own sections in `GameUserSettings.ini` (such as `[StructuresPlus]`), with a best guess at which installed mod each one belongs to. Click a section to see its settings. Edit a value and press **Set**, or use **Add setting** / **Remove setting**. **Add section...** is for a mod that has no settings in the file yet; its CurseForge page lists the section name and settings. Only the sections you change are rewritten, and the three views (Common settings, Mod settings and the raw file) always agree.
   - Edit INI files while the server is **stopped**. ARK rewrites GameUserSettings.ini when it shuts down.
 - **RCON console**: send any admin command. It shows a live player list with kick, ban and copy-ID, a live in-game chat feed, broadcast, and wiping wild dinos.
+- **Admins** (Players tab): players on this list get admin powers as soon as they join, so they don't need `enablecheats` every time. Pick an online player and click **Make admin**, or use **Add by ID...** with their EOS ID (the 32-letter ID in the Online players list). **Remove** takes them off.
+  - Cluster servers share one list, so a cluster admin is an admin on every map. A server outside the cluster has its own list.
+  - Tamer writes the list to `ShooterGame\Saved\AllowedCheaterAccountIDs.txt` on each server, and again before every start. ARK reads it only when the server starts, so changes work after the next restart; Tamer tells you which running servers need one.
+  - Admins already in that file (added by hand) are kept, shown as "(name unknown)" until they're seen online.
+  - Everyone on the list has full admin powers. Only add people you trust.
 - **Backups**: automatic backups every N minutes while the server is online, plus manual backups and a retention limit. Backups include saves, player and tribe files, configs and (for cluster servers) cluster data. **Restore** moves the current saves aside instead of deleting them.
 - **Mods tab**: search CurseForge's ARK: Survival Ascended mods by name. You can sort by popularity, last update, downloads or name, and read each mod's details.
   - **Install** adds a mod to the selected server. **Install on cluster** adds it to every server in the cluster. Double-clicking a result also installs it.

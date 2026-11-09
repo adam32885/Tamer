@@ -21,7 +21,7 @@ SHOTS = os.path.join(tempfile.gettempdir(), "tamer_shots")
 # Logic and GUI tests: run anywhere.
 PORTABLE = ["test_core", "test_urls", "test_import", "test_installer_env", "test_installer_update", "test_bm", "test_cfkey", "test_mods",
             "gui_dark", "gui_tasks", "gui_perf", "gui_diag", "gui_f4", "gui_updall", "gui_cmdline",
-            "gui_plugins", "gui_passive", "gui_cfkey", "gui_copy", "gui_scroll", "gui_kofi", "gui_update", "gui_welcome", "gui_import", "gui_no_servers", "gui_mod_names", "gui_mod_settings", "gui_bug_report", "gui_reorder", "gui_text_size", ("gui_small", "1100", "700", "1.25"), ("gui_small", "1366", "728", "1.0")]
+            "gui_plugins", "gui_passive", "gui_cfkey", "gui_copy", "gui_scroll", "gui_kofi", "gui_update", "gui_welcome", "gui_import", "gui_no_servers", "gui_mod_names", "gui_mod_settings", "gui_bug_report", "gui_reorder", "gui_text_size", "gui_admins", ("gui_small", "1100", "700", "1.25"), ("gui_small", "1366", "728", "1.0")]
 # These start a pretend ArkAscendedServer.exe. On Windows that's a real exe built by fakes.py, which needs
 # PyInstaller (pip install pyinstaller). Tamer itself doesn't.
 PROCESS =["test_cmdline", "test_crash_countdown", "test_automation", "test_diag_net",

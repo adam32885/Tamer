@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.21.1"
+APP_VERSION = "1.22.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -1096,6 +1096,8 @@ def default_server(index: int, existing: list) -> dict:
         "server_password": "",
         "mods": "",
         "cluster": False,
+        "admins": [],  # this server's own admin list when it isn't in the cluster (see admin_list)
+        "admins_imported": False,  # its AllowedCheaterAccountIDs.txt has been read into the list
         "battleye": False,
         "extra_options": "",
         "extra_args": "",
@@ -1135,7 +1137,8 @@ def default_server(index: int, existing: list) -> dict:
 # Mods and timed tasks aren't Tamer settings here: mods have their own tick box, timed tasks their own copy button.
 COPY_KEEP_SETTINGS = {"id", "name", "install_dir", "map", "session_name", "port", "rcon_port", "admin_password",
                       "server_password", "public_ip", "auto_public_ip", "multihome", "multihome_rcon", "upnp",
-                      "cpu_cores", "autostart", "cluster", "asaapi", "mods", "passive_mods", "timed_tasks"}
+                      "cpu_cores", "autostart", "cluster", "asaapi", "mods", "passive_mods", "timed_tasks",
+                      "admins", "admins_imported"}
 # The same idea for the game's ini files. Lower case, and matched in any section.
 COPY_KEEP_INI = {"sessionname", "port", "queryport", "rconport", "rconenabled", "multihome", "serveradminpassword",
                  "serverpassword", "spectatorpassword", "activemods", "altsavedirectoryname"}
@@ -1600,6 +1603,74 @@ class ServerRuntime:
         self.online_since_start = False
 
 
+# --------------------------------------------------------------------------------------
+# Admins: players in ShooterGame\Saved\AllowedCheaterAccountIDs.txt get admin when they join, without
+# enablecheats. Cluster servers share one list (cfg "cluster_admins"), other servers keep their own ("admins").
+# Each entry is {"id": EOS ID, "name": last name seen}. ARK reads the file only when the server starts.
+# --------------------------------------------------------------------------------------
+ADMIN_FILE = "AllowedCheaterAccountIDs.txt"
+EOS_ID_RE = re.compile(r"[0-9a-fA-F]{32}")
+
+
+def admin_file(s) -> str:
+    return os.path.join(s["install_dir"], SAVED_REL, ADMIN_FILE)
+
+
+def read_admin_file(s) -> list:
+    try:
+        with open(admin_file(s), encoding="utf-8-sig", errors="replace") as f:
+            return [x.strip() for x in f if x.strip() and not x.strip().startswith(("#", ";"))]
+    except OSError:
+        return []
+
+
+def admin_list(cfg, s) -> list:
+    """The admin list this server uses (the cluster's shared one, or its own)."""
+    return cfg.data.setdefault("cluster_admins", []) if s.get("cluster") else s.setdefault("admins", [])
+
+
+def admin_servers(cfg, s) -> list:
+    """The servers that share s's admin list."""
+    return [o for o in cfg.servers if o.get("cluster")] if s.get("cluster") else [s]
+
+
+def import_admin_files(cfg, servers) -> bool:
+    """Once per server, add the IDs already in its file to its list, so admins set up by hand aren't lost.
+    Returns True when anything changed (the config needs saving)."""
+    changed = False
+    for o in servers:
+        if o.get("admins_imported"):
+            continue
+        lst = admin_list(cfg, o)
+        have = {a["id"].lower() for a in lst}
+        for pid in read_admin_file(o):
+            if pid.lower() not in have:
+                lst.append({"id": pid, "name": ""})
+                have.add(pid.lower())
+        o["admins_imported"] = changed = True
+    return changed
+
+
+def write_admin_files(cfg, servers) -> list:
+    """Write each server's admin file from its list. Servers not installed yet are skipped (it's written again
+    before every start). Returns (server, error) for files that couldn't be written."""
+    failed = []
+    for o in servers:
+        if not os.path.isdir(o.get("install_dir") or ""):
+            continue
+        ids = [a["id"] for a in admin_list(cfg, o)]
+        path = admin_file(o)
+        if not ids and not os.path.exists(path):
+            continue
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("".join(i + "\n" for i in ids))
+        except OSError as e:
+            failed.append((o, e))
+    return failed
+
+
 class Manager:
     def __init__(self, cfg: AppConfig, notify):
         self.cfg = cfg
@@ -1856,6 +1927,10 @@ class Manager:
             self.log(s, f"Port conflict with running server '{clash['name']}'. Change ports first.")
             return
         os.makedirs(self.config_dir(s), exist_ok=True)
+        if import_admin_files(self.cfg, [s]):
+            self.cfg.save()
+        for _o, e in write_admin_files(self.cfg, [s]):
+            self.log(s, f"Couldn't write the admin list ({ADMIN_FILE}): {e}")
         if s.get("auto_public_ip"):
             try:
                 rt.auto_public_ip = public_ip()
@@ -6908,10 +6983,14 @@ class App:
         self.nb.add(tab, text="Players")
         pw = ttk.PanedWindow(tab, orient="horizontal")
         pw.pack(fill="both", expand=True, padx=6, pady=6)
-        initial_sash(pw, 0.38)
+        initial_sash(pw, 0.45)
 
-        pl = ttk.LabelFrame(pw, text="Online players", padding=6)
-        pw.add(pl, weight=1)
+        # left: online players over the admin list, with a draggable divider
+        lp = ttk.PanedWindow(pw, orient="vertical")
+        pw.add(lp, weight=1)
+        initial_sash(lp, 0.55)
+        pl = ttk.LabelFrame(lp, text="Online players", padding=6)
+        lp.add(pl, weight=1)
         self.ptree = ttk.Treeview(pl, columns=("name", "id"), show="headings", selectmode="browse", height=3)
         self.ptree.heading("name", text="Name")
         self.ptree.heading("id", text="Player ID (EOS)")
@@ -6922,11 +7001,26 @@ class App:
         self.ptree.pack(fill="both", expand=True)
         for text, cmd in [("Refresh", lambda: self._rcon_send("ListPlayers")),
                           ("Kick", lambda: self._player_action("KickPlayer")),
-                          ("Ban", lambda: self._player_action("BanPlayer")), ("Copy ID", self._copy_player_id)]:
+                          ("Ban", lambda: self._player_action("BanPlayer")), ("Copy ID", self._copy_player_id),
+                          ("Make admin", self._admin_add_online)]:
             pb.add(ttk.Button(pb, text=text, command=cmd))
 
+        # the title says whose list it is (_refresh_admins); a hint line of its own would squeeze the lists
+        af = self.admin_scope = ttk.LabelFrame(lp, text="Admins", padding=6)
+        lp.add(af, weight=1)
+        self.atree = ttk.Treeview(af, columns=("name", "id"), show="headings", selectmode="browse", height=3)
+        self.atree.heading("name", text="Name")
+        self.atree.heading("id", text="Player ID (EOS)")
+        self.atree.column("name", width=120, minwidth=60)
+        self.atree.column("id", width=170, minwidth=60)
+        ab = FlowFrame(af)
+        ab.pack(side="bottom", fill="x", pady=(4, 0))
+        self.atree.pack(fill="both", expand=True)
+        for text, cmd in [("Add by ID...", self._admin_add_by_id), ("Remove", self._admin_remove)]:
+            ab.add(ttk.Button(ab, text=text, command=cmd))
+
         cf = ttk.LabelFrame(pw, text="Console (in-game chat appears here too)", padding=6)
-        pw.add(cf, weight=2)
+        pw.add(cf, weight=1)  # equal weights keep the players side's share when the window is resized
         quick = FlowFrame(cf)
         quick.pack(fill="x", pady=(0, 4))
         for text, cmd in [("Save world", lambda: self._rcon_send("SaveWorld")),
@@ -7181,6 +7275,7 @@ class App:
         self._refresh_mod_marks()
         self._refresh_tasks()
         self._refresh_plugins()
+        self._refresh_admins()
         self._refresh_header()
 
     def _load_form(self):
@@ -7284,6 +7379,7 @@ class App:
             self._update_cmd_preview()
             self._refresh_installed_mods()
             self._refresh_mod_marks()
+            self._refresh_admins()  # joining or leaving the cluster switches admin lists
             if not silent:
                 self.mgr.log(s, "Settings saved.")
             if cpu_changed and self.mgr.is_running(s):
@@ -7578,6 +7674,7 @@ class App:
             self.ptree.delete(*self.ptree.get_children())
             for name, pid in want:
                 self.ptree.insert("", "end", values=(name, pid))
+            self._admin_names_seen(s, want)
         # next restart
         txt = ""
         try:
@@ -8410,6 +8507,94 @@ class App:
         if p:
             self.root.clipboard_clear()
             self.root.clipboard_append(p[1])
+
+    # ---- admins -------------------------------------------------------------------
+    def _refresh_admins(self):
+        self.atree.delete(*self.atree.get_children())
+        s = self.current()
+        if not s:
+            self.admin_scope.configure(text="Admins")
+            return
+        if import_admin_files(self.cfg, admin_servers(self.cfg, s)):
+            self.cfg.save()
+        if s.get("cluster"):
+            n = len(admin_servers(self.cfg, s))
+            scope = f"all {n} cluster servers" if n > 1 else "the cluster servers"
+        else:
+            scope = "this server only"
+        self.admin_scope.configure(text=f"Admins - {scope}")
+        for a in admin_list(self.cfg, s):
+            self.atree.insert("", "end", values=(a.get("name") or "(name unknown)", a["id"]))
+
+    def _admin_add(self, pid, name):
+        s = self.current()
+        if not s:
+            return
+        servers = admin_servers(self.cfg, s)
+        import_admin_files(self.cfg, servers)
+        lst = admin_list(self.cfg, s)
+        if any(a["id"].lower() == pid.lower() for a in lst):
+            messagebox.showinfo(APP_NAME, f"{name or pid} is already an admin.")
+            return
+        lst.append({"id": pid, "name": name})
+        self._admin_saved(servers)
+
+    def _admin_add_online(self):
+        p = self._selected_player()
+        if p:
+            self._admin_add(p[1], p[0])
+
+    def _admin_add_by_id(self):
+        raw = simpledialog.askstring(APP_NAME, "The player's EOS ID: 32 letters and numbers. The Online players list "
+                                               "shows it, or the player can find it in game.", parent=self.root)
+        if not raw:
+            return
+        pid = raw.strip()
+        if not EOS_ID_RE.fullmatch(pid):
+            messagebox.showerror(APP_NAME, f"\"{pid}\" isn't an EOS ID. It's 32 letters (a-f) and numbers, "
+                                           "such as 0002a1b2c3d4e5f60718293a4b5c6d7e.")
+            return
+        name = simpledialog.askstring(APP_NAME, "Their name (optional, just so you know who it is):",
+                                      parent=self.root) or ""
+        self._admin_add(pid, name.strip())
+
+    def _admin_remove(self):
+        s, sel = self.current(), self.atree.selection()
+        if not s or not sel:
+            messagebox.showinfo(APP_NAME, "Select an admin first.")
+            return
+        name, pid = self.atree.item(sel[0], "values")
+        if not messagebox.askyesno(APP_NAME, f"Remove {name} from the admins?"):
+            return
+        lst = admin_list(self.cfg, s)
+        lst[:] = [a for a in lst if a["id"].lower() != pid.lower()]
+        self._admin_saved(admin_servers(self.cfg, s))
+
+    def _admin_saved(self, servers):
+        """Save the list, write it to every server sharing it and say which running ones need a restart."""
+        self.cfg.save()
+        failed = write_admin_files(self.cfg, servers)
+        self._refresh_admins()
+        if failed:
+            messagebox.showerror(APP_NAME, "Couldn't write the admin list for:\n" +
+                                 "\n".join(f"{o['name']}: {e}" for o, e in failed))
+        running = [o["name"] for o in servers if self.mgr.is_running(o)]
+        if running:
+            messagebox.showinfo(APP_NAME, "Saved. ARK reads the admin list when a server starts, so it works after "
+                                          "the next restart of: " + ", ".join(running) + ".")
+
+    def _admin_names_seen(self, s, players):
+        """Fill in or update admins' names from the online player list."""
+        lst = admin_list(self.cfg, s)
+        names = {pid.lower(): name for name, pid in players}
+        changed = False
+        for a in lst:
+            name = names.get(a["id"].lower())
+            if name and a.get("name") != name:
+                a["name"], changed = name, True
+        if changed:
+            self.cfg.save()
+            self._refresh_admins()
 
     def _clear_console(self):
         s = self.current()
