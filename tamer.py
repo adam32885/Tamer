@@ -54,7 +54,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.22.0"
+APP_VERSION = "1.23.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -378,6 +378,23 @@ def system_memory():
 
 def gb(n) -> str:
     return f"{(n or 0) / 1024 ** 3:.1f} GB"
+
+
+# SteamCMD: "Update state (0x61) downloading, progress: 45.23 (6012345678 / 13293847562)"
+STEAM_PROGRESS_RE = re.compile(r"Update state \(0x[0-9a-fA-F]+\) ([a-zA-Z ]+?), progress: ([\d.]+) \((\d+) / (\d+)\)")
+STEAM_STAGES = {"downloading": "Downloading", "verifying": "Checking files", "preallocating": "Making room",
+                "committing": "Putting files in place", "reconfiguring": "Getting ready"}
+
+
+def parse_steam_progress(line):
+    """(stage, percent, bytes done, bytes total) from a SteamCMD progress line, else None.
+    The percent is None when SteamCMD has no total yet."""
+    m = STEAM_PROGRESS_RE.search(line)
+    if not m:
+        return None
+    word, pct, done, total = m.group(1).strip().lower(), float(m.group(2)), int(m.group(3)), int(m.group(4))
+    stage = next((v for k, v in STEAM_STAGES.items() if word.startswith(k)), word.capitalize())
+    return stage, (min(pct, 100.0) if total else None), done, total
 
 
 def format_duration(seconds) -> str:
@@ -1576,6 +1593,7 @@ class ServerRuntime:
         self.countdown_until = None
         self.crash_times = collections.deque(maxlen=10)
         self.installed_build = None
+        self.progress = None  # while SteamCMD runs: (verb, stage, percent or None, bytes done, bytes total)
         self.log = collections.deque(maxlen=3000)
         self.console = collections.deque(maxlen=2000)
         self.rcon = None
@@ -2444,7 +2462,7 @@ class Manager:
         self.log(s, "SteamCMD downloaded.")
         return exe
 
-    def _run_streamed(self, s, cmd) -> int:
+    def _run_streamed(self, s, cmd, on_progress=None) -> int:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW)
         last_progress = 0.0
@@ -2453,12 +2471,22 @@ class Manager:
                 line = line.strip()
                 if not line:
                     continue
+                if on_progress:
+                    p = parse_steam_progress(line)
+                    if p:
+                        on_progress(*p)
                 if "progress:" in line and time.time() - last_progress < 4:
                     continue
                 if "progress:" in line:
                     last_progress = time.time()
                 self.log(s, "  " + line)
         return proc.wait()
+
+    def _set_progress(self, s, rt, p):
+        old, rt.progress = rt.progress, p
+        # redraw only when the stage or the whole percent changes - SteamCMD prints many lines a second
+        if not old or old[1] != p[1] or (old[2] is None) != (p[2] is None) or int(old[2] or 0) != int(p[2] or 0):
+            self.notify("state", s["id"], None)
 
     def _update(self, s, validate=False):
         rt = self.runtime(s["id"])
@@ -2481,15 +2509,22 @@ class Manager:
         os.makedirs(s["install_dir"], exist_ok=True)
         cmd = [exe, "+force_install_dir", s["install_dir"], "+login", "anonymous",
                "+app_update", str(ASA_APP_ID)] + (["validate"] if validate else []) + ["+quit"]
-        with self.steam_lock:
-            self.log(s, f"{'Validating' if validate else 'Installing/updating'} ARK server files in {s['install_dir']} "
-                        f"(the first install is ~13 GB and can take a while)...")
-            for attempt in range(1, 4):
-                rc = self._run_streamed(s, cmd)
-                if rc == 0 and self.is_installed(s):
-                    break
-                self.log(s, f"SteamCMD exited with code {rc}; retrying ({attempt}/3)...")
-                time.sleep(3)
+        verb = "Validating" if validate else "Updating" if self.is_installed(s) else "Installing"
+        self._set_progress(s, rt, (verb, "Getting ready", None, 0, 0))  # SteamCMD may update itself first
+        try:
+            with self.steam_lock:
+                self.log(s, f"{'Validating' if validate else 'Installing/updating'} ARK server files in "
+                            f"{s['install_dir']} (the first install is ~13 GB and can take a while)...")
+                for attempt in range(1, 4):
+                    rc = self._run_streamed(s, cmd, lambda *p: self._set_progress(s, rt, (verb, *p)))
+                    if rc == 0 and self.is_installed(s):
+                        break
+                    self.log(s, f"SteamCMD exited with code {rc}; retrying ({attempt}/3)...")
+                    self._set_progress(s, rt, (verb, "Retrying", None, 0, 0))
+                    time.sleep(3)
+        finally:
+            rt.progress = None
+            self.notify("state", s["id"], None)
         rt.installed_build = self.read_installed_build(s)
         if self.is_installed(s):
             self.log(s, f"Server files ready (build {rt.installed_build or 'unknown'}).")
@@ -5764,7 +5799,7 @@ class App:
         font = tkfont.nametofont("TkDefaultFont")
         name_w = font.measure("Server 10") + 12 + 30  # + the status dot
         map_w = font.measure("The Island") + 16
-        status_w = max(font.measure(t) for t in ["Status", *self.colors["status"]]) + 16
+        status_w = max(font.measure(t) for t in ["Status", "Installing 100%", "Validating 100%", *self.colors["status"]]) + 16
         players_w = font.measure("Players") + 16
         self.server_cols_w = name_w + map_w + status_w + players_w
 
@@ -5833,6 +5868,12 @@ class App:
         self.h_status.pack(side="left", padx=14)
         self.h_info = ttk.Label(right, text="", style="Hint.TLabel")
         self.h_info.pack(fill="x", padx=8)
+        # shown only while SteamCMD installs / updates / validates this server
+        self.prog_row = ttk.Frame(right)
+        self.prog_bar = ttk.Progressbar(self.prog_row, maximum=100, length=220)
+        self.prog_bar.pack(side="left", padx=(0, 8))
+        self.prog_lbl = ttk.Label(self.prog_row, text="")
+        self.prog_lbl.pack(side="left", fill="x", expand=True)
 
         tb = FlowFrame(right)
         tb.pack(fill="x", padx=8, pady=(6, 6))
@@ -7611,6 +7652,8 @@ class App:
             rt = self.mgr.runtime(s["id"])
             ids.append(s["id"])
             state = rt.state
+            if rt.progress and rt.progress[2] is not None:  # "Updating 45%" (the bar is in the header)
+                state = f"{rt.progress[0]} {rt.progress[2]:.0f}%"
             tag = "busy" if rt.busy else state
             players = str(len(rt.players)) if rt.online else "–"
             vals = (MAP_LABELS.get(s["map"], s["map"]), state, players)
@@ -7627,12 +7670,38 @@ class App:
         self.cluster_lbl.configure(text=f"Cluster ID: {self.cfg.data['cluster_id']}\n"
                                         f"{n} server(s) in cluster. Change in File > Settings.")
 
+    def _refresh_progress(self, rt):
+        p = rt.progress if rt else None
+        if not p:
+            if self.prog_row.winfo_manager():
+                self.prog_bar.stop()
+                self.prog_row.pack_forget()
+            return
+        verb, stage, pct, done, total = p
+        if not self.prog_row.winfo_manager():
+            self.prog_row.pack(fill="x", padx=8, pady=(4, 0), after=self.h_info)
+        if pct is None:  # no numbers yet: a moving bar so it doesn't look stuck
+            if str(self.prog_bar.cget("mode")) != "indeterminate":
+                self.prog_bar.configure(mode="indeterminate")
+                self.prog_bar.start(15)
+            text = f"{verb}: {stage}..."
+        else:
+            if str(self.prog_bar.cget("mode")) != "determinate":
+                self.prog_bar.stop()
+                self.prog_bar.configure(mode="determinate")
+            self.prog_bar.configure(value=pct)
+            text = f"{verb}: {stage}... {pct:.0f}% ({done / 1024 ** 3:.1f} of {gb(total)})"
+            if stage == "Putting files in place":
+                text += " - this step can sit still for a while"
+        self.prog_lbl.configure(text=text)
+
     def _refresh_header(self):
         s = self.current()
         if not s:
             self.h_name.configure(text="No server selected")
             self.h_status.configure(text="")
             self.h_info.configure(text="")
+            self._refresh_progress(None)
             return
         rt = self.mgr.runtime(s["id"])
         self.h_name.configure(text=s["name"])
@@ -7654,6 +7723,7 @@ class App:
             info += f" · {len(rt.mods_outdated)} MOD UPDATE(S) - " + (
                 "waiting for an empty server" if rt.mod_wait_since is not None else "restart to apply")
         self.h_info.configure(text=info)
+        self._refresh_progress(rt)
         running = self.mgr.is_running(s)
         busy = bool(rt.busy)
         self.btns["start"].configure(state="disabled" if running or busy else "normal")
@@ -7827,11 +7897,15 @@ class App:
             self._update_all_win.deiconify()
             self._update_all_win.lift()
             return
+        # the run lives here, not in the window, so a window opened again mid-run still shows it and can cancel it
+        run = self._update_all_run = getattr(self, "_update_all_run", None) or \
+            {"running": False, "cancel": threading.Event(), "status": {}}
         d = tk.Toplevel(self.root)
         self._update_all_win = d
         d.title("Update all servers")
         d.transient(self.root)
         d.geometry("720x480")
+        d.protocol("WM_DELETE_WINDOW", d.withdraw)  # the X hides it like Close: updating carries on
         fr = ttk.Frame(d, padding=12)
         fr.pack(fill="both", expand=True)
         ttk.Label(fr, text="Updates your servers one at a time. Each one is stopped, updated and started again before "
@@ -7855,25 +7929,34 @@ class App:
         tree.column("#0", width=200, minwidth=100)
         tree.column("status", width=440, minwidth=150)
         for s in self.cfg.servers:
-            tree.insert("", "end", iid=s["id"], text=s["name"],
-                        values=("Running - will update" if self.mgr.is_running(s) else "Stopped - will update",))
-        cancel = threading.Event()
-        b_start = ttk.Button(bar, text="Start updating")
-        b_cancel = ttk.Button(bar, text="Cancel remaining", state="disabled")
+            tree.insert("", "end", iid=s["id"], text=s["name"], values=(run["status"].get(s["id"]) or (
+                "Running - will update" if self.mgr.is_running(s) else "Stopped - will update"),))
+        cancel = run["cancel"]
+        b_start = ttk.Button(bar, text="Start updating", state="disabled" if run["running"] else "normal")
+        b_cancel = ttk.Button(bar, text="Cancel remaining",
+                              state="normal" if run["running"] and not cancel.is_set() else "disabled")
         ttk.Button(bar, text="Close", command=d.withdraw).pack(side="right")
         ttk.Label(fr, text="You can close this window - updating carries on and is written to each server's Log.",
                   style="Hint.TLabel").pack(side="bottom", anchor="w", pady=(6, 0))
 
         def progress(s, status):
+            run["status"][s["id"]] = status
+
             def show():
-                if d.winfo_exists() and tree.exists(s["id"]):
-                    tree.set(s["id"], "status", status)
+                w = self._update_all_win  # whichever window is open now
+                if w is not None and w.winfo_exists() and w.ua_tree.exists(s["id"]):
+                    w.ua_tree.set(s["id"], "status", status)
             self.q.put(("call", None, show))
 
         def start():
+            if run["running"]:
+                return
             if not messagebox.askyesno(APP_NAME, "Update all servers now? Running servers will be restarted "
                                                  "one at a time.", parent=d):
                 return
+            run["running"] = True
+            run["status"].clear()
+            cancel.clear()
             b_start.configure(state="disabled")
             b_cancel.configure(state="normal")
             servers = list(self.cfg.servers)
@@ -7889,10 +7972,12 @@ class App:
                     self.q.put(("error", None, f"Update all stopped with an error:\n{e}"))
 
                 def done():
-                    if d.winfo_exists():
-                        b_cancel.configure(state="disabled")
-                        b_start.configure(state="normal", text="Run again")
-                        cancel.clear()
+                    run["running"] = False
+                    cancel.clear()
+                    w = self._update_all_win
+                    if w is not None and w.winfo_exists():
+                        w.ua_cancel.configure(state="disabled")
+                        w.ua_start.configure(state="normal", text="Run again")
                 self.q.put(("call", None, done))
             threading.Thread(target=work, daemon=True, name="update-all").start()
 
@@ -7905,6 +7990,7 @@ class App:
             b_cancel.configure(state="disabled")
 
         tree.pack(fill="both", expand=True)
+        d.ua_tree, d.ua_start, d.ua_cancel = tree, b_start, b_cancel
         b_start.configure(command=start)
         b_cancel.configure(command=stop)
         b_start.pack(side="left")

@@ -67,7 +67,7 @@ Tamer keeps everything next to itself:
 ## First server in 5 steps
 The welcome does steps 1 and 2 for you the first time Tamer opens.
 1. Open the **Server** tab. Set a server name and map, check the ports, and click **Save server settings**.
-2. Click **Install**. SteamCMD downloads and installs the server (app 2430930). The first install takes a while, and you can watch progress in **Log** tab.
+2. Click **Install**. SteamCMD downloads and installs the server (app 2430930). The first install takes a while. A progress bar under the server's name shows how far along it is, and the **Log** tab shows the details.
 3. Click **Open firewall port** and approve the admin prompt. On your router, forward the **game port (UDP)** to this PC. Do **not** forward the RCON port.
 4. Click **Start**. Loading the map can take several minutes. The status goes from *Starting* to **Online** once RCON responds.
 5. In-game, search for your server name in the Unofficial list. If it doesn't show up, enable "Show player servers".
@@ -80,6 +80,9 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 
 ## Features
 - **Install / Update / Validate** through SteamCMD. The header shows the installed build, the latest build, and *UPDATE AVAILABLE* when there's a new one.
+  - While SteamCMD works, a **progress bar** under the build shows the step and how far along it is, for example *Updating: Downloading... 45% (3.9 of 8.6 GB)*. The server list's Status column shows *Updating 45%* too, so you can follow **Update all** from any server.
+  - The steps are Getting ready, Making room, Downloading, Checking files and Putting files in place. Before SteamCMD has numbers to give (for example while it updates itself), the bar just moves back and forth.
+  - SteamCMD sends its progress in bursts, so the bar can sit still and then jump ahead. Big updates often stay on *Putting files in place* for a while near the end. That's normal.
 - **Stop** saves the world (`SaveWorld`) and exits cleanly (`DoExit`) over RCON. If players are online, it can count down with in-game warnings first.
 - **Crash auto-restart**: after 5 crashes in 30 minutes it pauses and asks you to check `ShooterGame.log`.
 - **Hide ARK's log window when using AsaApi** (Server tab > Behaviour, on by default): for servers started with AsaApi, the "ASA ... | Process ... | Mem ..." window ARK opens is hidden, so only the AsaApi window shows. Servers without AsaApi always keep ARK's window, so every server has one window. The server log is also on Tamer's Log tab. Untick the box to bring the window back, even while the server is running.

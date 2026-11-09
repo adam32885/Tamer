@@ -2,6 +2,10 @@
 
 Newest first. Each section is also the "What's new" text for that version's GitHub release.
 
+## 1.23.0
+- **Progress bar for installs and updates:** while a server installs, updates or validates, a bar under its name shows the step and how far along it is, for example "Updating: Downloading... 45% (3.9 of 8.6 GB)". The server list shows "Updating 45%" too, so you can follow **Update all** from anywhere. SteamCMD reports in bursts, so the bar can pause and then jump, and big updates often sit on "Putting files in place" for a while near the end.
+- Fixed: closing the **Update all** window with the X while it was updating made Tamer forget the run. Opening the window again looked like nothing had started, with no way to cancel the remaining updates, and you could even start a second run. Now the X just hides the window (like Close), and opening it again shows where each server is, with **Cancel remaining**. A second Update all can't start until the first one is finished.
+
 ## 1.22.0
 - **Admins without enablecheats:** a new **Admins** list on the Players tab. Players on it get admin powers as soon as they join. Pick an online player and click **Make admin**, or add someone by their EOS ID. Cluster servers share one list; a server outside the cluster has its own. Tamer writes ARK's `AllowedCheaterAccountIDs.txt` for you, and keeps any admins already in it. Changes work after the server's next restart.
 
