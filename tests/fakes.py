@@ -26,8 +26,13 @@ def ensure_built():
     if not WIN:
         return None
     out = _built_dir()
-    if os.path.isfile(os.path.join(out, "dist", "fake", "fake.exe")):
-        return os.path.join(out, "dist", "fake")
+    dist = os.path.join(out, "dist", "fake")
+    internal = os.path.join(dist, "_internal")
+    # Windows' temp cleanup can empty _internal but leave fake.exe, which then dies at once ("Failed to load
+    # Python DLL"): only reuse a build whose Python DLL is still there
+    if os.path.isfile(os.path.join(dist, "fake.exe")) and os.path.isdir(internal) and \
+            any(f.lower().startswith("python3") and f.lower().endswith(".dll") for f in os.listdir(internal)):
+        return dist
     shutil.rmtree(out, ignore_errors=True)
     os.makedirs(out)
     r = subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--onedir", "--console", "--name", "fake",

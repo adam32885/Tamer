@@ -24,6 +24,7 @@ from __future__ import annotations
 import base64
 import collections
 import datetime as dt
+import html
 import json
 import math
 import os
@@ -32,6 +33,7 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -54,7 +56,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.23.0"
+APP_VERSION = "1.24.0"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -185,7 +187,32 @@ def read_text_file(path: str) -> str:
     return raw.decode("utf-8", "replace")
 
 
+class ReadOnlyFile(PermissionError):
+    """A file Tamer needs to change is marked read-only (often by another server manager, or by hand)."""
+    def __init__(self, path):
+        super().__init__(f"{os.path.basename(path)} is read-only")
+        self.path = path
+
+
+def is_read_only(path: str) -> bool:
+    return os.path.isfile(path) and not os.access(path, os.W_OK)
+
+
+def make_writable(path: str):
+    os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE)  # on Windows: untick "Read-only"
+
+
+def backup_copy(src: str, dst: str):
+    """Copy src to dst as an ordinary file: a read-only original mustn't make the backup read-only too,
+    or the next backup over it fails."""
+    if is_read_only(dst):
+        make_writable(dst)
+    shutil.copyfile(src, dst)
+
+
 def write_text_file(path: str, text: str):
+    if is_read_only(path):  # os.replace would fail with a bare "Access is denied"
+        raise ReadOnlyFile(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\r\n" if IS_WINDOWS else "\n") as f:
@@ -967,6 +994,41 @@ class DiscordNotifier:
                 raise RuntimeError(f"Couldn't reach Discord: {e.reason}")
         raise RuntimeError("Discord kept rate-limiting the webhook")
 
+    @staticmethod
+    def message(url: str, payload: dict, message_id=None) -> str:
+        """Post a webhook message and return its id, or edit message_id in place. A deleted message raises
+        LookupError, so the caller can post a new one."""
+        base, _, query = url.strip().partition("?")  # keep ?thread_id=... for webhooks in a forum thread
+        q = [p for p in query.split("&") if p.startswith("thread_id=")]
+        if message_id:
+            target, method = f"{base.rstrip('/')}/messages/{message_id}", "PATCH"
+        else:
+            target, method = base, "POST"
+            q.append("wait=true")  # so Discord answers with the new message (and its id)
+        target += "?" + "&".join(q) if q else ""
+        body = json.dumps(payload).encode("utf-8")
+        for _ in range(4):
+            req = urllib.request.Request(target, data=body, method=method, headers={
+                "Content-Type": "application/json", "User-Agent": f"Tamer/{APP_VERSION}"})
+            try:
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    return str(json.load(r).get("id") or message_id or "")
+            except urllib.error.HTTPError as e:
+                if e.code == 429:
+                    try:
+                        wait = float(json.load(e).get("retry_after", 2))
+                    except Exception:
+                        wait = 2.0
+                    time.sleep(min(max(wait, 0.5), 30))
+                    continue
+                if e.code == 404 and message_id:
+                    raise LookupError("the status message was deleted")
+                hint = " - check the webhook URL" if e.code in (400, 401, 403, 404) else ""
+                raise RuntimeError(f"Discord returned HTTP {e.code}{hint}")
+            except urllib.error.URLError as e:
+                raise RuntimeError(f"Couldn't reach Discord: {e.reason}")
+        raise RuntimeError("Discord kept rate-limiting the webhook")
+
     def _worker(self):
         while True:
             url, payload = self.q.get()
@@ -1115,6 +1177,7 @@ def default_server(index: int, existing: list) -> dict:
         "cluster": False,
         "admins": [],  # this server's own admin list when it isn't in the cluster (see admin_list)
         "admins_imported": False,  # its AllowedCheaterAccountIDs.txt has been read into the list
+        "rate_event_state": {"names": [], "keys": {}},  # see apply_rate_events
         "battleye": False,
         "extra_options": "",
         "extra_args": "",
@@ -1133,6 +1196,7 @@ def default_server(index: int, existing: list) -> dict:
         "mod_restart_wait_minutes": 120,
         "ram_restart_gb": 0,
         "discord_notify": True,
+        "status_board": True,  # shown in the Discord status message
         "timed_tasks": [],
         "upnp": False,
         "active_event": "",
@@ -1155,7 +1219,7 @@ def default_server(index: int, existing: list) -> dict:
 COPY_KEEP_SETTINGS = {"id", "name", "install_dir", "map", "session_name", "port", "rcon_port", "admin_password",
                       "server_password", "public_ip", "auto_public_ip", "multihome", "multihome_rcon", "upnp",
                       "cpu_cores", "autostart", "cluster", "asaapi", "mods", "passive_mods", "timed_tasks",
-                      "admins", "admins_imported"}
+                      "admins", "admins_imported", "rate_event_state"}
 # The same idea for the game's ini files. Lower case, and matched in any section.
 COPY_KEEP_INI = {"sessionname", "port", "queryport", "rconport", "rconenabled", "multihome", "serveradminpassword",
                  "serverpassword", "spectatorpassword", "activemods", "altsavedirectoryname"}
@@ -1269,6 +1333,35 @@ def unquote(value: str) -> str:
     return v[1:-1] if len(v) >= 2 and v[0] == v[-1] == '"' else v
 
 
+def clean_path(value: str) -> str:
+    """A folder path without the leftovers of other launch lines: quotes and escaped quotes around it, a slash
+    before the drive letter and slashes at the end. \\"C:\\ARK Data\\" or \\C:\\ARK Data\\ -> C:\\ARK Data.
+    (Imported \\"...\\" paths used to keep their backslashes, so ARK got a folder that can't exist.)"""
+    v = (value or "").strip()
+    for _ in range(3):
+        v = re.sub(r'^\\?"|\\?"$', "", v).strip()
+    if re.match(r"^[\\/][A-Za-z]:", v):  # \C:\... -> C:\...
+        v = v[1:]
+    while len(v) > 3 and v[-1] in "\\/":  # keep a bare drive root like C:\
+        v = v[:-1]
+    return v
+
+
+def cluster_dir_problem(path: str) -> str:
+    """Why ARK couldn't use this as the cluster folder, or "" when it's fine (creating it if needed)."""
+    if not path:
+        return "No cluster data folder is set."
+    if IS_WINDOWS and not re.match(r"^([A-Za-z]:[\\/]|\\\\)", path):
+        return f"\"{path}\" isn't a full folder path (it should start with a drive, such as C:\\)."
+    if ":" in path[2:] or '"' in path:
+        return f"\"{path}\" isn't a valid folder path."
+    try:
+        os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        return f"The cluster folder \"{path}\" can't be created: {e.strerror or e}."
+    return ""
+
+
 def server_root_of(path: str):
     """The server's install folder from its exe path or any folder inside it, or None if it isn't one."""
     p = os.path.normpath(path)
@@ -1321,7 +1414,7 @@ def parse_server_cmdline(line):
         elif key == "-clusterid":
             s["cluster"], found["cluster_id"] = True, v
         elif key == "-clusterdiroverride":
-            found["cluster_dir"] = v
+            found["cluster_dir"] = clean_path(v)
         elif key in IMPORT_FLAG_KEYS and eq:
             s[IMPORT_FLAG_KEYS[key]] = v
         elif key in IMPORT_FLAG_DROP:
@@ -1493,6 +1586,10 @@ class AppConfig:
             "discord_webhook": "",
             "discord_name": APP_NAME,
             "discord_events": {k: k != "players" for k, _ in DISCORD_EVENTS},
+            "status_board": False,  # keep a live status message in Discord (Manager.status_board_update)
+            "status_webhook": "",  # its own channel; "" = the alerts webhook
+            "status_board_names": False,  # list online players' names in it
+            "status_message": {},  # {"hook": hash of the webhook, "id": the message Tamer edits}
             "tamer_update_check": True,  # look for a newer Tamer on GitHub once a day
             "text_size": "large",  # normal / large / larger (TEXT_SIZES)
             "servers_dir": "",  # where new servers go ("" = servers next to Tamer); set by the welcome
@@ -1522,6 +1619,13 @@ class AppConfig:
             merged.update(s)
             servers.append(merged)
         self.data["servers"] = servers
+        # a cluster folder imported from \"...\" quotes kept its backslashes and ARK couldn't save cluster uploads
+        old_dir = self.data.get("cluster_dir") or ""
+        if clean_path(old_dir) != old_dir:
+            self.data["cluster_dir"] = clean_path(old_dir)
+            self.cluster_dir_fixed = (old_dir, self.data["cluster_dir"])
+            if os.path.exists(self.path):
+                self.save()
         if not servers and self.first_run:  # a brand-new Tamer gets a starter server for the welcome to fill in;
             self.data["servers"].append(default_server(1, []))  # an empty list someone made themselves stays empty
             self.save()
@@ -1622,8 +1726,9 @@ class ServerRuntime:
 
 
 # --------------------------------------------------------------------------------------
-# Admins: players in ShooterGame\Saved\AllowedCheaterAccountIDs.txt get admin when they join, without
-# enablecheats. Cluster servers share one list (cfg "cluster_admins"), other servers keep their own ("admins").
+# Admins: players in ShooterGame\Saved\AllowedCheaterAccountIDs.txt should get admin when they join, without
+# enablecheats - but ASA often doesn't read the file (nor AdminListURL), so the Admins tab says enablecheats may
+# still be needed. Cluster servers share one list (cfg "cluster_admins"), other servers keep their own ("admins").
 # Each entry is {"id": EOS ID, "name": last name seen}. ARK reads the file only when the server starts.
 # --------------------------------------------------------------------------------------
 ADMIN_FILE = "AllowedCheaterAccountIDs.txt"
@@ -1680,6 +1785,9 @@ def write_admin_files(cfg, servers) -> list:
         path = admin_file(o)
         if not ids and not os.path.exists(path):
             continue
+        if is_read_only(path):
+            failed.append((o, ReadOnlyFile(path)))
+            continue
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
@@ -1687,6 +1795,166 @@ def write_admin_files(cfg, servers) -> list:
         except OSError as e:
             failed.append((o, e))
     return failed
+
+
+# --------------------------------------------------------------------------------------
+# Rate events (Schedule tab > Rate events...): settings that change while an event is on, e.g. a weekend 2x.
+# Rates are decided at every start (scheduled, manual or after a crash): Tamer writes the values of the events
+# that are on at that moment, and puts the normal values back once none is. cfg.data["rate_events"] holds
+#   {"id", "name", "enabled", "repeat": "weekly"|"once",
+#    weekly: "start_day"/"end_day" (0 = Monday), "start_time"/"end_time" ("HH:MM");
+#    once:   "start"/"end" ("YYYY-MM-DD HH:MM");
+#    "servers": [server ids], "settings": [[file, section, key, value], ...]}
+# and each server's "rate_event_state" = {"names": [...], "keys": {"file|section|key": {"normal", "written"}}}.
+# --------------------------------------------------------------------------------------
+DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+EVENT_SETTINGS = [x for _g, items in COMMON_SETTINGS for x in items if x[5] in ("num", "bool")]
+
+
+def _hhmm(t: str):
+    h, m = parse_times(t)[0]
+    return h, m
+
+
+def event_window(ev, now: dt.datetime):
+    """(start, end) of the event's occurrence that is on now, or else the next one; None when a one-off is over.
+    Raises ValueError for bad times."""
+    if ev.get("repeat") == "once":
+        start = dt.datetime.strptime(ev["start"].strip(), "%Y-%m-%d %H:%M")
+        end = dt.datetime.strptime(ev["end"].strip(), "%Y-%m-%d %H:%M")
+        if end <= start:
+            raise ValueError("The event ends before it starts.")
+        return (start, end) if now < end else None
+    sh, sm = _hhmm(ev["start_time"])
+    eh, em = _hhmm(ev["end_time"])
+    sd, ed = int(ev["start_day"]), int(ev["end_day"])
+    length = dt.timedelta(days=(ed - sd) % 7, hours=eh - sh, minutes=em - sm)
+    if length <= dt.timedelta(0):
+        length += dt.timedelta(days=7)
+    start = now.replace(hour=sh, minute=sm, second=0, microsecond=0) - dt.timedelta(days=(now.weekday() - sd) % 7)
+    if start > now:
+        start -= dt.timedelta(days=7)
+    if now >= start + length:
+        start += dt.timedelta(days=7)
+    return start, start + length
+
+
+def event_on(ev, now) -> bool:
+    try:
+        w = event_window(ev, now)
+    except (ValueError, KeyError):
+        return False
+    return bool(ev.get("enabled", True) and w and w[0] <= now < w[1])
+
+
+def event_when(ev) -> str:
+    """'Fri 18:00 - Mon 00:00 weekly' or '2026-12-24 18:00 - 2026-12-27 00:00'."""
+    if ev.get("repeat") == "once":
+        return f"{ev.get('start', '?')} - {ev.get('end', '?')}"
+    d = lambda i: DAY_NAMES[int(i)][:3]
+    return f"{d(ev['start_day'])} {ev['start_time']} - {d(ev['end_day'])} {ev['end_time']} weekly"
+
+
+def _same_value(a, b) -> bool:
+    """ARK rewrites its INI on shutdown (3 -> 3.000000), so numbers compare as numbers."""
+    if a is None or b is None:
+        return a is None and b is None
+    try:
+        return abs(float(a) - float(b)) < 1e-6
+    except ValueError:
+        return str(a).strip().lower() == str(b).strip().lower()
+
+
+def server_files(s, config_dir) -> list:
+    """The server's files Tamer writes: its two game settings files and its admin list."""
+    return [os.path.join(config_dir, "GameUserSettings.ini"), os.path.join(config_dir, "Game.ini"), admin_file(s)]
+
+
+def read_only_files(s, config_dir) -> list:
+    return [p for p in server_files(s, config_dir) if is_read_only(p)]
+
+
+def apply_rate_events(cfg, s, config_dir, now=None) -> list:
+    """Make s's INI files match the rate events on right now (called just before a start). Returns log lines."""
+    now = now or dt.datetime.now()
+    events = [ev for ev in cfg.data.get("rate_events", []) if s["id"] in ev.get("servers", []) and event_on(ev, now)]
+    want = {}
+    for ev in events:  # a later event wins when two set the same thing
+        for f, sec, key, val in ev.get("settings", []):
+            want[f"{f}|{sec}|{key}"] = str(val)
+    state = s.setdefault("rate_event_state", {"names": [], "keys": {}})
+    if not want and not state["keys"]:
+        state["names"] = []
+        return []
+    for f in {k.split("|", 1)[0] for k in list(want) + list(state["keys"])}:  # before anything changes
+        if is_read_only(os.path.join(config_dir, f)):
+            raise ReadOnlyFile(os.path.join(config_dir, f))
+    texts, msgs = {}, []
+
+    def text(f):
+        if f not in texts:
+            texts[f] = read_text_file(os.path.join(config_dir, f))
+        return texts[f]
+
+    # 1. put the normal values back - unless someone changed the setting since Tamer wrote it: that's the new normal
+    for k, st in list(state["keys"].items()):
+        f, sec, key = k.split("|", 2)
+        cur = ini_get(text(f), sec, key)
+        if k in want and _same_value(cur, want[k]):
+            continue  # already the event's value - keep the remembered normal one
+        if _same_value(cur, st["written"]):
+            texts[f] = ini_set(text(f), sec, key, st["normal"])
+            msgs.append(f"{key} back to {st['normal'] if st['normal'] is not None else 'its default'}")
+        del state["keys"][k]
+    # 2. write the event values, remembering the normal ones
+    for k, val in want.items():
+        f, sec, key = k.split("|", 2)
+        cur = ini_get(text(f), sec, key)
+        if k not in state["keys"]:
+            state["keys"][k] = {"normal": cur, "written": val}
+        state["keys"][k]["written"] = val
+        if not _same_value(cur, val):
+            texts[f] = ini_set(text(f), sec, key, val)
+            msgs.append(f"{key} {cur if cur is not None else 'default'} -> {val}")
+    os.makedirs(config_dir, exist_ok=True)
+    for f, t in texts.items():
+        write_text_file(os.path.join(config_dir, f), t)
+    names = [ev["name"] for ev in events]
+    out = []
+    if names:
+        out.append(f"Rate event on: {', '.join(names)}" + (f" ({'; '.join(msgs)})" if msgs else ""))
+    elif state["names"]:
+        out.append(f"Rate event over ({', '.join(state['names'])}) - normal rates back" +
+                   (f" ({'; '.join(msgs)})" if msgs else ""))
+    state["names"] = names
+    return out
+
+
+def event_switch_note(s, ev, now=None) -> str:
+    """When the event really takes effect on s, since rates only change when the server (re)starts."""
+    now = now or dt.datetime.now()
+    try:
+        w = event_window(ev, now)
+    except (ValueError, KeyError):
+        return ""
+    if not w:
+        return "This one-off event is over."
+    try:
+        times = parse_times(s.get("restart_times", ""))
+    except ValueError:
+        times = []
+    if not times:
+        return f"{s['name']}: no daily restart times, so the rates only change when you restart it yourself."
+    fmt = lambda d: f"{d:%a} {d:%d %b %H:%M}"
+    on = next_occurrence(times, max(w[0], now) - dt.timedelta(seconds=1))
+    off = next_occurrence(times, w[1] - dt.timedelta(seconds=1))
+    if w[0] <= now and ev.get("name") in s.get("rate_event_state", {}).get("names", []):
+        return f"{s['name']}: on now - back to normal at the restart on {fmt(off)}."
+    if on >= w[1]:
+        if w[0] <= now and ev.get("repeat") != "once":  # this week's is nearly over: talk about next week's
+            return event_switch_note(s, ev, w[1])
+        return f"{s['name']}: no daily restart falls inside this event, so it won't take effect."
+    return f"{s['name']}: switches at the restart on {fmt(on)}, back to normal on {fmt(off)}."
 
 
 class Manager:
@@ -1715,12 +1983,116 @@ class Manager:
         self.sys_mem = (0, 0)
         self.last_sys_alert = 0.0
         self._last_discord_error = 0.0
+        fixed = getattr(cfg, "cluster_dir_fixed", None)
+        clustered = [s for s in cfg.servers if s.get("cluster")]
+        if fixed and clustered:
+            self.log(clustered[0], f"Fixed the cluster data folder setting: {fixed[0]} -> {fixed[1]}. The old value "
+                                   "couldn't work, so ARK wasn't saving transfers between maps. Restart the cluster "
+                                   "servers to use the fixed folder.")
 
     def _discord_error(self, msg):
         if time.time() - self._last_discord_error > 300 and self.cfg.servers:  # don't flood the log
             self._last_discord_error = time.time()
             for s in self.cfg.servers:
                 self.log(s, msg)
+
+    # ---- live status message in Discord -------------------------------------------
+    STATUS_REFRESH = 600  # seconds: edit at least this often, so "last checked" stays honest
+
+    def status_board_url(self):
+        d = self.cfg.data
+        return (d.get("status_webhook") or "").strip() or (d.get("discord_webhook") or "").strip()
+
+    def status_board_lines(self, names=None) -> list:
+        """One line per server shown in the status message (plus player names, if switched on)."""
+        names_on = self.cfg.data.get("status_board_names") if names is None else names
+        esc = lambda t: re.sub(r"([*_`~|>\\])", r"\\\1", str(t))
+        out = []
+        for s in self.cfg.servers:
+            if not s.get("status_board", True):
+                continue
+            rt = self.runtime(s["id"])
+            state = rt.state
+            if rt.progress and rt.progress[2] is not None:
+                state = f"{rt.progress[0]} {rt.progress[2]:.0f}%"
+            icon = ("🔧" if rt.busy else "🟢" if state == "Online" else
+                    "🟡" if state in ("Starting", "Queued to start") else "🔴")
+            parts = [f"{icon} **{esc(s['name'])}**: {state}"]
+            if rt.online:
+                parts.append(f"{len(rt.players)}/{s['max_players']} players")
+            parts.append(MAP_LABELS.get(s["map"], s["map"]))
+            ev = s.get("rate_event_state", {}).get("names")
+            if ev:
+                parts.append("EVENT: " + ", ".join(esc(x) for x in ev))
+            if self.update_available(s):
+                parts.append("game update available")
+            if rt.countdown_until:
+                parts.append(f"restarting at {rt.countdown_until:%H:%M}")
+            line = " · ".join(parts)
+            if names_on and rt.online and rt.players:
+                who = [esc(p[1]) for p in rt.players]
+                line += "\n   " + ", ".join(who[:10]) + (f" and {len(who) - 10} more" if len(who) > 10 else "")
+            out.append(line)
+        return out
+
+    def status_board_payload(self, closed=False, names=None) -> dict:
+        lines = self.status_board_lines(names) or ["(No servers are set to show here.)"]
+        now = int(time.time())
+        if closed:
+            foot, color = f"⚪ Tamer is closed - status not updating (since <t:{now}:f>)", DISCORD_COLORS["muted"]
+        else:
+            online = sum(1 for ln in lines if ln.startswith("🟢"))
+            foot = f"Last checked <t:{now}:R>"
+            color = DISCORD_COLORS["good" if online == len(lines) else "warn" if online else "bad"]
+        desc = ("\n".join(lines) + "\n\n" + foot)[:4000]
+        return {"username": (self.cfg.data.get("discord_name") or APP_NAME)[:80], "allowed_mentions": {"parse": []},
+                "embeds": [{"title": "Server status", "description": desc, "color": color}]}
+
+    def status_board_update(self, force=False, closed=False, url=None, names=None) -> str:
+        """Post or edit the status message. Edits only when something changed (or every STATUS_REFRESH s).
+        url / names try values from the Settings window before they're saved.
+        Returns "" when done or nothing was needed, else what went wrong. Blocking: call from a thread."""
+        url = url or self.status_board_url()
+        if not url or not (self.cfg.data.get("status_board") or force):
+            return ""
+        sig = url + ("closed" if closed else "") + "\n".join(self.status_board_lines(names))
+        now = time.time()
+        if not force and sig == getattr(self, "_board_sig", None) and now - getattr(self, "_board_at", 0) < self.STATUS_REFRESH:
+            return ""
+        hook = zlib.crc32(url.encode()) & 0xFFFFFFFF
+        saved = self.cfg.data.get("status_message") or {}
+        msg_id = saved.get("id") if saved.get("hook") == hook else None
+        payload = self.status_board_payload(closed, names)
+        try:
+            try:
+                new_id = DiscordNotifier.message(url, payload, msg_id)
+            except LookupError:  # someone deleted it: post a new one
+                new_id = DiscordNotifier.message(url, payload)
+        except Exception as e:
+            self.board_error = str(e)
+            return self.board_error
+        self._board_sig, self._board_at, self.board_error = sig, now, ""
+        if new_id and new_id != msg_id:
+            self.cfg.data["status_message"] = {"hook": hook, "id": new_id}
+            self.cfg.save()
+        return ""
+
+    STATUS_CHECK = 60  # seconds between looks at whether the status message needs editing
+
+    def _status_board_tick(self):
+        if not self.cfg.data.get("status_board") or getattr(self, "_board_busy", False):
+            return
+        if time.time() - getattr(self, "_board_checked", 0) < self.STATUS_CHECK:
+            return
+        self._board_checked = time.time()
+        self._board_busy = True
+
+        def work():
+            try:
+                self.status_board_update()
+            finally:
+                self._board_busy = False
+        threading.Thread(target=work, daemon=True, name="status-board").start()
 
     def alert(self, s, event, title, desc="", color="info"):
         if s is not None and not s.get("discord_notify", True):
@@ -1833,7 +2205,7 @@ class Manager:
             args.append(f"-ActiveEvent={s['active_event'].strip()}")
         if s.get("cluster"):
             args.append(f"-clusterid={self.cfg.data['cluster_id']}")
-            args.append(f"-ClusterDirOverride={self.cfg.data['cluster_dir']}")
+            args.append(f"-ClusterDirOverride={clean_path(self.cfg.data['cluster_dir'])}")
         if s.get("extra_args", "").strip():
             # Split on spaces outside "double quotes". Backslashes stay literal so Windows paths survive.
             args += [t.replace('"', "") for t in re.findall(r'(?:[^\s"]+|"[^"]*"?)+', s["extra_args"])]
@@ -1841,16 +2213,18 @@ class Manager:
 
     @staticmethod
     def to_cmdline(args: list[str]) -> str:
-        """Windows command line in the form Unreal expects: -Key="value with spaces"."""
+        """Windows command line in the form Unreal expects: -Key="value with spaces".
+        Backslashes right before a closing quote are doubled: C:\\Data\\" would read as an escaped quote."""
+        tail = lambda t: re.sub(r"(\\+)$", r"\1\1", t)
         parts = []
         for i, a in enumerate(args):
             if " " not in a:
                 parts.append(a)
             elif i > 1 and a.startswith("-") and "=" in a:
                 k, v = a.split("=", 1)
-                parts.append(f'{k}="{v}"')
+                parts.append(f'{k}="{tail(v)}"')
             else:
-                parts.append(f'"{a}"')
+                parts.append(f'"{tail(a)}"')
         return " ".join(parts)
 
     # ---- RCON -----------------------------------------------------------------
@@ -1944,7 +2318,28 @@ class Manager:
         if clash:
             self.log(s, f"Port conflict with running server '{clash['name']}'. Change ports first.")
             return
+        if s.get("cluster"):
+            problem = cluster_dir_problem(clean_path(self.cfg.data.get("cluster_dir", "")))
+            if problem:  # start anyway, but loudly: transfers between maps won't be saved
+                self.log(s, f"{problem} Transfers between maps won't be saved until it's fixed in File > Settings > "
+                            "General > Cluster data folder.")
+                self.alert(s, "diagnose", "Cluster folder problem", problem + " Transfers between maps won't be saved.",
+                           "bad")
         os.makedirs(self.config_dir(s), exist_ok=True)
+        locked = read_only_files(s, self.config_dir(s))
+        if locked:
+            self.log(s, f"{', '.join(os.path.basename(p) for p in locked)} {'is' if len(locked) == 1 else 'are'} "
+                        "read-only, so Tamer can't update them (game settings, rate events, admins). "
+                        "Click 'Make them writable' on the Game tab.")
+        try:  # rates for the rate events on right now (or the normal ones back)
+            for line in apply_rate_events(self.cfg, s, self.config_dir(s)):
+                self.log(s, line)
+            self.cfg.save()
+            self.notify("state", s["id"], None)
+        except ReadOnlyFile as e:
+            self.log(s, f"The rate events couldn't be applied: {e}.")
+        except Exception as e:
+            self.log(s, f"Couldn't apply the rate events: {e}")
         if import_admin_files(self.cfg, [s]):
             self.cfg.save()
         for _o, e in write_admin_files(self.cfg, [s]):
@@ -2271,6 +2666,20 @@ class Manager:
             self.alert(s, "diagnose", reason, "\n".join(f"• {f['title']}" for f in bad[:5]) +
                        "\nOpen the manager and click Troubleshoot for details.", "bad")
         self.notify("diagnosis", s["id"], findings)
+
+    CRASH_REPORT_WAIT = 4  # seconds for ARK's crash reporter to finish writing
+
+    def _crash_alert(self, s, title, first_line, since):
+        """The crash alert, with the likely cause and log lines added (read in the background)."""
+        def work():
+            details = ""
+            try:
+                time.sleep(self.CRASH_REPORT_WAIT)
+                details = crash_details(self, s, since)
+            except Exception as e:
+                self.log(s, f"Couldn't add crash details to the alert: {e}")
+            self.alert(s, "crash", title, first_line + ("\n\n" + details if details else ""), "bad")
+        threading.Thread(target=work, daemon=True, name="crash-alert").start()
 
     def _crash_restart_when_free(self, s):
         rt = self.runtime(s["id"])
@@ -2685,6 +3094,7 @@ class Manager:
             try:
                 if not self.paused:
                     self._tick()
+                    self._status_board_tick()
             except Exception:
                 traceback.print_exc()
             self.notify("state", None, None)
@@ -2779,17 +3189,18 @@ class Manager:
                     rt.crash_times.append(now)
                     recent = [t for t in rt.crash_times if now - t < 1800]
                     rt.announced_online = False
+                    started = rt.start_time
                     if not s.get("auto_restart_on_crash"):
                         rt.want_running = False
-                        self.alert(s, "crash", "Crashed", f"Exit code {code}. Auto-restart is off for this server.", "bad")
+                        self._crash_alert(s, "Crashed", f"Exit code {code}. Auto-restart is off for this server.", started)
                     elif len(recent) >= 5:
                         rt.want_running = False
                         self.log(s, "Crashed 5 times in 30 minutes - auto-restart paused. Check ShooterGame.log.")
-                        self.alert(s, "crash", "Crashed repeatedly - auto-restart paused",
-                                   "5 crashes in 30 minutes. Check ShooterGame.log on the host.", "bad")
+                        self._crash_alert(s, "Crashed repeatedly - auto-restart paused",
+                                          "5 crashes in 30 minutes. Check ShooterGame.log on the host.", started)
                     else:
                         self.log(s, "Auto-restarting after crash...")
-                        self.alert(s, "crash", "Crashed - restarting", f"Exit code {code}. Restarting automatically.", "bad")
+                        self._crash_alert(s, "Crashed - restarting", f"Exit code {code}. Restarting automatically.", started)
                         threading.Thread(target=self._crash_restart_when_free, args=(s,), daemon=True).start()
 
             self._sample_resources(s, rt, running, now)
@@ -3038,6 +3449,10 @@ class Manager:
         names = [f for f in (GUS, GINI) if os.path.isfile(os.path.join(src_dir, f))]
         if not names:
             return f"Game settings skipped: {src['name']} has no game settings files yet. Start it once to create them."
+        locked = [f for f in names if is_read_only(os.path.join(dst_dir, f))]
+        if locked:
+            return (f"Game settings skipped: {' and '.join(locked)} {'is' if len(locked) == 1 else 'are'} read-only "
+                    f"on {dst['name']}. Click 'Make them writable' on its Game tab, then copy again.")
         os.makedirs(dst_dir, exist_ok=True)
         stamp = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         for f in names:
@@ -3045,7 +3460,7 @@ class Manager:
             target = ""
             if os.path.isfile(path):
                 target = read_text_file(path)
-                shutil.copy2(path, f"{path}.before-copy-{stamp}")
+                backup_copy(path, f"{path}.before-copy-{stamp}")
             write_text_file(path, ini_merge_keep(read_text_file(os.path.join(src_dir, f)), target))
         return "Game settings copied. The old files were saved next to the new ones."
 
@@ -3298,10 +3713,67 @@ def diagnose_server(mgr, s) -> list[dict]:
         recent = [t for t in rt.crash_times if time.time() - t < 3600]
         if recent:
             add("warning", f"{len(recent)} crash(es) in the last hour", "See the other findings for likely causes.")
+    if s.get("cluster"):
+        problem = cluster_dir_problem(clean_path(mgr.cfg.data.get("cluster_dir", "")))
+        if problem:
+            add("error", "The cluster data folder can't work",
+                f"{problem} ARK can't save transfers between maps, so uploaded characters, dinos and items are lost. "
+                "Set a real folder in File > Settings > General > Cluster data folder, the same for every cluster "
+                "server, then restart them.")
+    locked = read_only_files(s, mgr.config_dir(s))
+    if locked:
+        add("warning", "Some of the server's files are read-only",
+            "Tamer can't save game settings, rate events or the admin list to them. Another server manager "
+            "often does this. Click 'Make them writable' on the Game tab, or untick Read-only in each file's "
+            "Properties.", locked)
     if not [f for f in out if f["severity"] in ("error", "warning")]:
         add("ok", "No problems found" if text else "No problems found (no log to check yet)")
     order = {"error": 0, "warning": 1, "info": 2, "ok": 3}
     return sorted(out, key=lambda f: order[f["severity"]])
+
+
+CRASHES_REL = os.path.join("ShooterGame", "Saved", "Crashes")
+EOS_ANY_RE = re.compile(r"\b[0-9a-fA-F]{32}\b")
+
+
+def crash_details(mgr, s, since=None, limit=1800) -> str:
+    """A short, password-free crash summary for Discord: the troubleshooter's likely causes, ARK's own crash
+    report (Saved\\Crashes) and the last lines of ShooterGame.log. Only files written since `since` count."""
+    parts = []
+    causes = [f for f in diagnose_server(mgr, s)
+              if f["severity"] in ("error", "warning") and "crash(es) in the last hour" not in f["title"]]
+    if causes:
+        parts.append("**Likely cause:**\n" + "\n".join(
+            f"• {f['title']}" + (f" - {f['fix'][:200]}" if f["fix"] else "") for f in causes[:3]))
+    cdir = os.path.join(s["install_dir"], CRASHES_REL)
+    try:
+        folders = [os.path.join(cdir, d) for d in os.listdir(cdir) if os.path.isdir(os.path.join(cdir, d))]
+    except OSError:
+        folders = []
+    folders = [d for d in folders if not since or os.path.getmtime(d) >= since - 5]
+    if folders:
+        newest = max(folders, key=os.path.getmtime)
+        ctx = read_text_file(os.path.join(newest, "CrashContext.runtime-xml"))
+        m = re.search(r"<ErrorMessage>(.*?)</ErrorMessage>", ctx, re.S)
+        msg = html.unescape(m.group(1)).strip() if m else ""
+        if msg:
+            msg = "\n".join(ln.strip()[:160] for ln in msg.splitlines() if ln.strip())[:500]
+            parts.append("**ARK's crash report:**\n```\n" + msg.replace("`", "'") + "\n```")
+    log_path = os.path.join(s["install_dir"], GAMELOG_REL)
+    if os.path.isfile(log_path) and (not since or os.path.getmtime(log_path) >= since - 5):
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(max(0, os.path.getsize(log_path) - 64 * 1024))
+                lines = [ln.strip() for ln in f.read().decode("utf-8", "replace").splitlines() if ln.strip()]
+        except OSError:
+            lines = []
+        if lines:
+            tail = "\n".join(ln[:160] for ln in lines[-8:])
+            parts.append("**Last lines of ShooterGame.log:**\n```\n" + tail.replace("`", "'") + "\n```")
+    text = EOS_ANY_RE.sub("(player ID)", bug_report_redactor(mgr.cfg)("\n".join(parts)))
+    if len(text) > limit:  # keep code blocks closed when cutting
+        text = text[:limit - 20].rstrip() + ("\n...```" if text[:limit - 20].count("```") % 2 else "\n...")
+    return text
 
 
 def format_findings(s, findings) -> str:
@@ -3722,7 +4194,7 @@ def update_log(msg: str):
 
 
 BUG_REPORT_ISSUE_URL = f"https://github.com/{TAMER_REPO}/issues/new?template=bug_report.yml"
-SECRET_SETTINGS = ("curseforge_api_key", "discord_webhook", "battlemetrics_token", "chat_key")
+SECRET_SETTINGS = ("curseforge_api_key", "discord_webhook", "battlemetrics_token", "chat_key", "status_webhook")
 SECRET_SERVER_SETTINGS = ("admin_password", "server_password")
 
 
@@ -5022,6 +5494,8 @@ SCHEDULE_FIELDS = [
     ("Backups", "backup_keep", "Backups to keep", "int", "Oldest are deleted; 0 = keep all"),
     ("Notifications", "discord_notify", "Send Discord notifications for this server", "bool",
      "Webhook and event types are in File > Settings"),
+    ("Notifications", "status_board", "Show this server in the Discord status message", "bool",
+     "When the live status message is on (File > Settings > Discord)"),
 ]
 INT_KEYS = {"port", "rcon_port", "max_players", "backup_interval_min", "backup_keep"}
 FLOAT_KEYS = {"ram_restart_gb"}
@@ -6208,6 +6682,13 @@ class App:
         ttk.Button(bar, text="Reload from disk", command=self._load_ini).pack(side="left", padx=4)
         self.ini_warn = ttk.Label(bar, text="", style="Warn.TLabel")
         self.ini_warn.pack(side="left", padx=10)
+        # shown only when files Tamer writes are read-only (_refresh_read_only)
+        self.ro_row = ttk.Frame(tab)
+        self.ro_lbl = ttk.Label(self.ro_row, text="", style="Warn.TLabel", justify="left")
+        self.ro_lbl.pack(side="left", fill="x", expand=True)
+        ttk.Button(self.ro_row, text="Make them writable", command=self._make_writable).pack(side="right")
+        self.ro_row.bind("<Configure>", lambda e: self.ro_lbl.configure(wraplength=max(200, e.width - 220)))
+        self.ro_anchor = bar
         self.ini_nb = ttk.Notebook(tab)
         self.ini_nb.pack(fill="both", expand=True, padx=6, pady=(0, 6))
 
@@ -7049,6 +7530,11 @@ class App:
         # the title says whose list it is (_refresh_admins); a hint line of its own would squeeze the lists
         af = self.admin_scope = ttk.LabelFrame(lp, text="Admins", padding=6)
         lp.add(af, weight=1)
+        # ASA often doesn't read AllowedCheaterAccountIDs.txt (or AdminListURL) - say so
+        note = ttk.Label(af, text="ASA often ignores this list. If ARK says you're not an admin, type "
+                                  "enablecheats <admin password> in the console.", style="Hint.TLabel", justify="left")
+        note.pack(fill="x", pady=(0, 4))
+        af.bind("<Configure>", lambda e: note.configure(wraplength=max(150, e.width - 16)), add="+")
         self.atree = ttk.Treeview(af, columns=("name", "id"), show="headings", selectmode="browse", height=3)
         self.atree.heading("name", text="Name")
         self.atree.heading("id", text="Player ID (EOS)")
@@ -7097,8 +7583,11 @@ class App:
         ttk.Button(bar, text="Save automation settings", command=lambda: self._save_form(),
                    style="Accent.TButton").pack(side="left")
         ttk.Button(bar, text="Stagger across servers...", command=self._stagger_dialog).pack(side="left", padx=4)
+        ttk.Button(bar, text="Rate events...", command=self._events_dialog).pack(side="left")
         self.next_restart_lbl = ttk.Label(bar, text="", style="Hint.TLabel")
         self.next_restart_lbl.pack(side="left", padx=10)
+        self.events_lbl = ttk.Label(top, text="", style="Hint.TLabel")
+        self.events_lbl.pack(anchor="w", padx=6, pady=(0, 4))
 
         lf = ttk.LabelFrame(split, text="Backups", padding=6)
         split.add(lf, weight=2)
@@ -7636,13 +8125,58 @@ class App:
                 APP_NAME, "The server is running. ARK rewrites GameUserSettings.ini when it shuts down, "
                           "which can undo your edits.\n\nStop the server first, then save. Save anyway?"):
             return
+        locked = [self._ini_path(s, f) for f in self.ini_texts if is_read_only(self._ini_path(s, f))]
+        if locked:
+            names = " and ".join(os.path.basename(p) for p in locked)
+            if not messagebox.askyesno(APP_NAME, f"{names} {'is' if len(locked) == 1 else 'are'} read-only "
+                                                 "(often set by another server manager, or by hand), so Tamer can't "
+                                                 "save to it.\n\nMake it writable and save?"):
+                return
+            try:
+                for p in locked:
+                    make_writable(p)
+            except OSError as e:
+                messagebox.showerror(APP_NAME, f"Couldn't make {names} writable: {e}")
+                return
         for fname, txt in self.ini_texts.items():
             path = self._ini_path(s, fname)
             if os.path.isfile(path):
-                shutil.copy2(path, path + ".bak")
+                backup_copy(path, path + ".bak")
             write_text_file(path, txt.get("1.0", "end-1c"))
+        self._refresh_read_only()
         self.mgr.log(s, "INI files saved (previous versions kept as .bak).")
         messagebox.showinfo(APP_NAME, "Saved. Changes take effect after the next restart.")
+
+    def _refresh_read_only(self):
+        """The Game tab's yellow line when files Tamer writes are read-only."""
+        s = self.current()
+        locked = read_only_files(s, self.mgr.config_dir(s)) if s else []
+        if not locked:
+            if self.ro_row.winfo_manager():
+                self.ro_row.pack_forget()
+            return
+        names = [os.path.basename(p) for p in locked]
+        self.ro_lbl.configure(text=f"{', '.join(names)} {'is' if len(names) == 1 else 'are'} read-only (probably set "
+                                   "by another server manager), so Tamer can't save changes to "
+                                   f"{'it' if len(names) == 1 else 'them'}.")
+        if not self.ro_row.winfo_manager():
+            self.ro_row.pack(fill="x", padx=6, pady=(0, 6), after=self.ro_anchor)
+
+    def _make_writable(self):
+        s = self.current()
+        if not s:
+            return
+        failed = []
+        for p in read_only_files(s, self.mgr.config_dir(s)):
+            try:
+                make_writable(p)
+                self.mgr.log(s, f"{os.path.basename(p)} is no longer read-only.")
+            except OSError as e:
+                failed.append(f"{os.path.basename(p)}: {e}")
+        self._refresh_read_only()
+        if failed:
+            messagebox.showerror(APP_NAME, "Couldn't make these writable:\n" + "\n".join(failed) +
+                                 "\n\nRight-click each file > Properties and untick Read-only.")
 
     # ---- server list -------------------------------------------------------------
     def _refresh_server_list(self):
@@ -7702,6 +8236,7 @@ class App:
             self.h_status.configure(text="")
             self.h_info.configure(text="")
             self._refresh_progress(None)
+            self._refresh_read_only()
             return
         rt = self.mgr.runtime(s["id"])
         self.h_name.configure(text=s["name"])
@@ -7722,7 +8257,11 @@ class App:
         if rt.mods_outdated:
             info += f" · {len(rt.mods_outdated)} MOD UPDATE(S) - " + (
                 "waiting for an empty server" if rt.mod_wait_since is not None else "restart to apply")
+        ev_names = s.get("rate_event_state", {}).get("names")
+        if ev_names:
+            info += " · EVENT: " + ", ".join(ev_names)
         self.h_info.configure(text=info)
+        self._refresh_events_label()
         self._refresh_progress(rt)
         running = self.mgr.is_running(s)
         busy = bool(rt.busy)
@@ -7737,6 +8276,7 @@ class App:
         self.btns["kill"].configure(state="normal" if running else "disabled")
         self.toolbar.relayout()
         self.ini_warn.configure(text="Server is running - stop it before saving INI changes." if running else "")
+        self._refresh_read_only()
         # players
         cur = [self.ptree.item(i, "values") for i in self.ptree.get_children()]
         want = [(p[1], p[2]) for p in rt.players]
@@ -8015,6 +8555,282 @@ class App:
                 text += f"\nNot sent (offline or RCON error): {', '.join(skipped)}"
             self.q.put(("info", None, text))
         threading.Thread(target=work, daemon=True).start()
+
+    def _events_dialog(self):
+        """Rate events: a list on the left, the selected event's editor on the right."""
+        if getattr(self, "_events_win", None) is not None and self._events_win.winfo_exists():
+            self._events_win.deiconify()
+            self._events_win.lift()
+            return
+        events = self.cfg.data.setdefault("rate_events", [])
+        d = self._events_win = tk.Toplevel(self.root)
+        d.title("Rate events")
+        d.transient(self.root)
+        k = max(1.0, self.root.winfo_fpixels("1i") / 96)  # Windows display scaling: 150% -> 1.5
+        d.geometry(f"{min(int(1000 * k), int(self.root.winfo_screenwidth() * 0.9))}x"
+                   f"{min(int(680 * k), int(self.root.winfo_screenheight() * 0.85))}")
+        fr = ttk.Frame(d, padding=12)
+        fr.pack(fill="both", expand=True)
+        intro = ttk.Label(fr, text="Change settings for a while, such as 2x taming every weekend. Rates only change "
+                                   "when a server starts or restarts, so an event begins at the first restart after "
+                                   "its start time and ends at the first restart after its end time.", justify="left")
+        intro.pack(fill="x", pady=(0, 8))
+        pw = ttk.PanedWindow(fr, orient="horizontal")
+        pw.pack(fill="both", expand=True)
+        left = ttk.Frame(pw)
+        pw.add(left, weight=1)
+        initial_sash(pw, 0.36)
+        etree = ttk.Treeview(left, columns=("when",), show="tree headings", selectmode="browse", height=6)
+        etree.heading("#0", text="Event")
+        etree.heading("when", text="When")
+        etree.column("#0", width=120, minwidth=60)
+        etree.column("when", width=170, minwidth=60)
+        lb = FlowFrame(left)
+        lb.pack(side="bottom", fill="x", pady=(4, 0))
+        etree.pack(fill="both", expand=True)
+
+        right = ScrollFrame(pw)
+        pw.add(right, weight=2)
+        ed = right.inner
+        v = {"name": tk.StringVar(), "enabled": tk.BooleanVar(value=True), "repeat": tk.StringVar(value="weekly"),
+             "start_day": tk.StringVar(value=DAY_NAMES[4]), "start_time": tk.StringVar(value="18:00"),
+             "end_day": tk.StringVar(value=DAY_NAMES[0]), "end_time": tk.StringVar(value="00:00"),
+             "start": tk.StringVar(), "end": tk.StringVar()}
+        r = ttk.Frame(ed)
+        r.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Label(r, text="Name").pack(side="left")
+        ttk.Entry(r, textvariable=v["name"], width=28).pack(side="left", padx=6)
+        ttk.Checkbutton(r, text="On", variable=v["enabled"]).pack(side="left", padx=6)
+
+        when = ttk.LabelFrame(ed, text="When", padding=6)
+        when.pack(fill="x", padx=6, pady=4)
+        w1 = ttk.Frame(when)
+        w1.pack(fill="x")
+        ttk.Radiobutton(w1, text="Every week, from", variable=v["repeat"], value="weekly").pack(side="left")
+        ttk.Combobox(w1, textvariable=v["start_day"], values=DAY_NAMES, width=10, state="readonly").pack(side="left", padx=4)
+        ttk.Entry(w1, textvariable=v["start_time"], width=6).pack(side="left")
+        ttk.Label(w1, text="to").pack(side="left", padx=4)
+        ttk.Combobox(w1, textvariable=v["end_day"], values=DAY_NAMES, width=10, state="readonly").pack(side="left", padx=4)
+        ttk.Entry(w1, textvariable=v["end_time"], width=6).pack(side="left")
+        w2 = ttk.Frame(when)
+        w2.pack(fill="x", pady=(6, 0))
+        ttk.Radiobutton(w2, text="Once, from", variable=v["repeat"], value="once").pack(side="left")
+        ttk.Entry(w2, textvariable=v["start"], width=17).pack(side="left", padx=4)
+        ttk.Label(w2, text="to").pack(side="left", padx=4)
+        ttk.Entry(w2, textvariable=v["end"], width=17).pack(side="left", padx=4)
+        hints = [ttk.Label(when, text="Times are 24-hour (18:00), dates YYYY-MM-DD HH:MM. Sunday midnight is "
+                                      "Monday 00:00.", style="Hint.TLabel", justify="left")]
+        hints[0].pack(fill="x", pady=(6, 0))
+
+        sv = ttk.LabelFrame(ed, text="Servers", padding=6)
+        sv.pack(fill="x", padx=6, pady=4)
+        srv_vars = {}
+        srv_box = FlowFrame(sv)
+        srv_box.pack(fill="x")
+        for s in self.cfg.servers:
+            srv_vars[s["id"]] = tk.BooleanVar()
+            srv_vars[s["id"]].trace_add("write", lambda *_: show_note())
+            srv_box.add(ttk.Checkbutton(srv_box, text=s["name"], variable=srv_vars[s["id"]]))
+
+        st = ttk.LabelFrame(ed, text="Settings during the event", padding=6)
+        st.pack(fill="x", padx=6, pady=4)
+        stree = ttk.Treeview(st, columns=("value",), show="tree headings", selectmode="browse", height=5)
+        stree.heading("#0", text="Setting")
+        stree.heading("value", text="Event value")
+        stree.column("#0", width=260, minwidth=100)
+        stree.column("value", width=100, minwidth=60)
+        stree.pack(fill="x")
+        labels = {f"{f}|{sec}|{key}": f"{label} ({key})" for f, sec, key, label, _h, _k in EVENT_SETTINGS}
+        by_label = {f"{label} ({key})": (f, sec, key, kind) for f, sec, key, label, _h, kind in EVENT_SETTINGS}
+        add = ttk.Frame(st)
+        add.pack(fill="x", pady=(6, 0))
+        pick_v, val_v = tk.StringVar(), tk.StringVar()
+        ttk.Combobox(add, textvariable=pick_v, values=list(by_label), width=40, state="readonly").pack(side="left")
+        ttk.Entry(add, textvariable=val_v, width=8).pack(side="left", padx=4)
+        settings = []  # [file, section, key, value] of the event being edited
+
+        def show_settings():
+            stree.delete(*stree.get_children())
+            for i, (f, sec, key, val) in enumerate(settings):
+                stree.insert("", "end", iid=str(i), text=labels.get(f"{f}|{sec}|{key}", key), values=(val,))
+
+        def add_setting():
+            item = by_label.get(pick_v.get())
+            val = val_v.get().strip()
+            if not item or not val:
+                messagebox.showinfo(APP_NAME, "Pick a setting and type its value for the event.", parent=d)
+                return
+            f, sec, key, kind = item
+            if kind == "num":
+                try:
+                    float(val)
+                except ValueError:
+                    messagebox.showerror(APP_NAME, f"\"{val}\" isn't a number.", parent=d)
+                    return
+            elif val.lower() not in ("true", "false"):
+                messagebox.showerror(APP_NAME, "Use True or False for this setting.", parent=d)
+                return
+            else:
+                val = val.capitalize()
+            settings[:] = [x for x in settings if x[2] != key] + [[f, sec, key, val]]
+            val_v.set("")
+            show_settings()
+
+        def remove_setting():
+            sel = stree.selection()
+            if sel:
+                del settings[int(sel[0])]
+                show_settings()
+        ttk.Button(add, text="Add / change", command=add_setting).pack(side="left")
+        ttk.Button(add, text="Remove", command=remove_setting).pack(side="left", padx=4)
+        hints.append(ttk.Label(st, text="Tip: the Game tab shows each setting's normal value. Lower is faster for "
+                                        "intervals such as Mating interval.", style="Hint.TLabel", justify="left"))
+        hints[-1].pack(fill="x", pady=(6, 0))
+
+        note = ttk.Label(ed, text="", style="Hint.TLabel", justify="left")
+        note.pack(fill="x", padx=6, pady=(6, 0))
+
+        def rewrap(_e=None):
+            wrap = max(200, right.winfo_width() - 50)
+            for lbl in hints + [note]:
+                lbl.configure(wraplength=wrap)
+            intro.configure(wraplength=max(200, fr.winfo_width() - 10))
+        d.bind("<Configure>", rewrap, add="+")
+        cur = {"id": None}
+
+        def form_event():
+            ev = {"id": cur["id"] or secrets.token_hex(4), "name": v["name"].get().strip(),
+                  "enabled": v["enabled"].get(), "repeat": v["repeat"].get(),
+                  "servers": [sid for sid, b in srv_vars.items() if b.get()], "settings": [list(x) for x in settings]}
+            if ev["repeat"] == "once":
+                ev.update(start=v["start"].get().strip(), end=v["end"].get().strip())
+            else:
+                ev.update(start_day=DAY_NAMES.index(v["start_day"].get()), start_time=v["start_time"].get().strip(),
+                          end_day=DAY_NAMES.index(v["end_day"].get()), end_time=v["end_time"].get().strip())
+            return ev
+
+        def show_note(*_):
+            ev = form_event()
+            try:
+                event_window(ev, dt.datetime.now())
+            except (ValueError, KeyError) as e:
+                note.configure(text=f"Check the times: {e}" if str(e) else "Check the times.")
+                return
+            lines = [event_switch_note(s, ev) for s in self.cfg.servers if s["id"] in ev["servers"]]
+            note.configure(text="\n".join(x for x in lines if x) or "Tick the servers this event is for.")
+        for key in ("repeat", "start_day", "start_time", "end_day", "end_time", "start", "end", "name"):
+            v[key].trace_add("write", show_note)
+
+        def load(ev):
+            cur["id"] = ev.get("id") if ev else None
+            ev = ev or {}
+            v["name"].set(ev.get("name", ""))
+            v["enabled"].set(ev.get("enabled", True))
+            v["repeat"].set(ev.get("repeat", "weekly"))
+            v["start_day"].set(DAY_NAMES[int(ev.get("start_day", 4))])
+            v["start_time"].set(ev.get("start_time", "18:00"))
+            v["end_day"].set(DAY_NAMES[int(ev.get("end_day", 0))])
+            v["end_time"].set(ev.get("end_time", "00:00"))
+            tomorrow = dt.datetime.now() + dt.timedelta(days=1)
+            v["start"].set(ev.get("start", f"{tomorrow:%Y-%m-%d} 18:00"))
+            v["end"].set(ev.get("end", f"{tomorrow + dt.timedelta(days=2):%Y-%m-%d} 00:00"))
+            sel_srv = self.current()
+            for sid, b in srv_vars.items():
+                b.set(sid in ev["servers"] if "servers" in ev else bool(sel_srv and sid == sel_srv["id"]))
+            settings[:] = [list(x) for x in ev.get("settings", [])]
+            show_settings()
+            show_note()
+
+        def refresh_list(select=None):
+            etree.delete(*etree.get_children())
+            for ev in events:
+                try:
+                    when = event_when(ev)
+                except (KeyError, IndexError, ValueError):
+                    when = "?"
+                etree.insert("", "end", iid=ev["id"], text=ev["name"] + ("" if ev.get("enabled", True) else " (off)"),
+                             values=(when,))
+            if select and etree.exists(select):
+                etree.selection_set(select)
+
+        def on_pick(_e=None):
+            sel = etree.selection()
+            ev = next((x for x in events if sel and x["id"] == sel[0]), None)
+            if ev:
+                load(ev)
+        etree.bind("<<TreeviewSelect>>", on_pick)
+
+        def save():
+            ev = form_event()
+            if not ev["name"]:
+                messagebox.showerror(APP_NAME, "Give the event a name.", parent=d)
+                return
+            try:
+                if event_window(ev, dt.datetime.now()) is None:
+                    if not messagebox.askyesno(APP_NAME, "This one-off event is already over. Save it anyway?",
+                                               parent=d):
+                        return
+            except (ValueError, KeyError) as e:
+                messagebox.showerror(APP_NAME, f"Check the times: {e}\nUse 24-hour times like 18:00, and dates "
+                                               "like 2026-12-24 18:00.", parent=d)
+                return
+            if not ev["servers"]:
+                messagebox.showerror(APP_NAME, "Tick at least one server.", parent=d)
+                return
+            if not ev["settings"]:
+                messagebox.showerror(APP_NAME, "Add at least one setting to change during the event.", parent=d)
+                return
+            old = next((i for i, x in enumerate(events) if x["id"] == ev["id"]), None)
+            if old is None:
+                events.append(ev)
+            else:
+                events[old] = ev
+            cur["id"] = ev["id"]
+            self.cfg.save()
+            refresh_list(ev["id"])
+            self._refresh_events_label()
+            messagebox.showinfo(APP_NAME, f"Saved \"{ev['name']}\".\n\n" + note.cget("text"), parent=d)
+
+        def delete():
+            sel = etree.selection()
+            ev = next((x for x in events if sel and x["id"] == sel[0]), None)
+            if not ev or not messagebox.askyesno(
+                    APP_NAME, f"Delete \"{ev['name']}\"? Servers it's on now get their normal rates back at their "
+                              "next restart.", parent=d):
+                return
+            events.remove(ev)
+            self.cfg.save()
+            refresh_list()
+            load(None)
+            self._refresh_events_label()
+
+        for text, cmd in (("New", lambda: (etree.selection_set(()), load(None))), ("Delete", delete)):
+            lb.add(ttk.Button(lb, text=text, command=cmd))
+        bar = ttk.Frame(fr)
+        bar.pack(fill="x", pady=(8, 0))
+        ttk.Button(bar, text="Save event", command=save, style="Accent.TButton").pack(side="left")
+        ttk.Button(bar, text="Close", command=d.destroy).pack(side="right")
+        d.ev = {"vars": v, "servers": srv_vars, "settings": settings, "pick": pick_v, "value": val_v,
+                "add": add_setting, "save": save, "delete": delete, "tree": etree, "stree": stree, "note": note,
+                "load": load}
+        refresh_list()
+        if events:
+            etree.selection_set(events[0]["id"])
+            load(events[0])
+        else:
+            load(None)
+        self.themed_window(d)
+
+    def _refresh_events_label(self):
+        """'Rate events for this server: Weekend 2x (on now)' under the Schedule tab's buttons."""
+        s = self.current()
+        if not s or not hasattr(self, "events_lbl"):
+            return
+        mine = [ev for ev in self.cfg.data.get("rate_events", []) if s["id"] in ev.get("servers", [])]
+        on = s.get("rate_event_state", {}).get("names", [])
+        self.events_lbl.configure(text="Rate events for this server: " + ", ".join(
+            ev["name"] + (" (on now)" if ev["name"] in on else "") + ("" if ev.get("enabled", True) else " (off)")
+            for ev in mine) if mine else "")
 
     def _stagger_dialog(self):
         s = self._need()
@@ -8663,7 +9479,10 @@ class App:
         self._refresh_admins()
         if failed:
             messagebox.showerror(APP_NAME, "Couldn't write the admin list for:\n" +
-                                 "\n".join(f"{o['name']}: {e}" for o, e in failed))
+                                 "\n".join(f"{o['name']}: {e}" for o, e in failed) +
+                                 ("\n\nClick 'Make them writable' on the Game tab, then try again."
+                                  if any(isinstance(e, ReadOnlyFile) for _o, e in failed) else ""))
+            self._refresh_read_only()
         running = [o["name"] for o in servers if self.mgr.is_running(o)]
         if running:
             messagebox.showinfo(APP_NAME, "Saved. ARK reads the admin list when a server starts, so it works after "
@@ -8887,6 +9706,39 @@ class App:
             ttk.Checkbutton(evf, text=label, variable=ev_vars[key]).grid(row=i // 2, column=i % 2, sticky="w", padx=(0, 24), pady=1)
         hint(dc, r + 1, "Create a webhook in Discord: Server Settings > Integrations > Webhooks > New Webhook > "
                         "Copy Webhook URL. Each server can opt out on its Schedule tab.")
+        sb = ttk.LabelFrame(dc, text="Live status message", padding=6)
+        sb.grid(row=r + 2, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        sb.columnconfigure(1, weight=1)
+        board_v = tk.BooleanVar(value=data.get("status_board", False))
+        names_v = tk.BooleanVar(value=data.get("status_board_names", False))
+        ttk.Checkbutton(sb, text="Keep a live status message in Discord (one message, kept up to date)",
+                        variable=board_v).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(sb, text="Webhook (optional)").grid(row=1, column=0, sticky="w", pady=3, padx=(0, 10))
+        status_hook = tk.StringVar(value=data.get("status_webhook", ""))
+        vars_["status_webhook"] = status_hook
+        ttk.Entry(sb, textvariable=status_hook, width=50).grid(row=1, column=1, sticky="ew", pady=3)
+
+        def post_board_now():
+            url = status_hook.get().strip() or vars_["discord_webhook"].get().strip()
+            if not url:
+                messagebox.showinfo(APP_NAME, "Paste a webhook URL first (here, or the main one above).", parent=d)
+                return
+            names = names_v.get()  # what's typed and ticked counts, even before Save
+
+            def work():
+                err = self.mgr.status_board_update(force=True, url=url, names=names)
+                self.q.put(("error", None, f"Couldn't post the status message:\n{err}") if err else
+                           ("info", None, "Status message posted - check your Discord channel. Tamer edits that same "
+                                          "message from now on."))
+            threading.Thread(target=work, daemon=True).start()
+        ttk.Button(sb, text="Post now", command=post_board_now).grid(row=1, column=2, padx=4)
+        ttk.Checkbutton(sb, text="List online players' names (up to 10 per server)", variable=names_v).grid(
+            row=2, column=0, columnspan=3, sticky="w")
+        ttk.Label(sb, text="Use a webhook for its own channel (such as #server-status) so alerts don't push it out of "
+                           "view; blank uses the webhook above. Tamer checks every minute and edits the message when "
+                           "something changes. When Tamer closes, it says so (unless the background service takes "
+                           "over).", style="Hint.TLabel", wraplength=600, justify="left").grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         # --- Tray & background service
         bg = page("Tray & background service")
@@ -8984,11 +9836,21 @@ class App:
             if not re.fullmatch(r"[A-Za-z0-9_-]+", cid or ""):
                 messagebox.showerror(APP_NAME, "Cluster ID must be letters/numbers only.", parent=d)
                 return
-            hook = vars_["discord_webhook"].get().strip()
-            if hook and not re.match(r"https://(\w+\.)?discord(app)?\.com/api/webhooks/", hook):
-                if not messagebox.askyesno(APP_NAME, "That doesn't look like a Discord webhook URL "
-                                                     "(https://discord.com/api/webhooks/...). Save anyway?", parent=d):
-                    return
+            vars_["cluster_dir"].set(clean_path(vars_["cluster_dir"].get()))  # quotes and end slashes off
+            problem = cluster_dir_problem(vars_["cluster_dir"].get())
+            if problem:
+                messagebox.showerror(APP_NAME, f"{problem}\n\nThe cluster data folder is where ARK saves transfers "
+                                               "between maps, so it has to be a real folder.", parent=d)
+                return
+            for hook in (vars_["discord_webhook"].get().strip(), vars_["status_webhook"].get().strip()):
+                if hook and not re.match(r"https://(\w+\.)?discord(app)?\.com/api/webhooks/", hook):
+                    if not messagebox.askyesno(APP_NAME, f"{hook[:60]}\n\nThat doesn't look like a Discord webhook "
+                                                         "URL (https://discord.com/api/webhooks/...). Save anyway?",
+                                               parent=d):
+                        return
+            if board_v.get() and not (vars_["status_webhook"].get().strip() or vars_["discord_webhook"].get().strip()):
+                messagebox.showerror(APP_NAME, "The live status message needs a webhook URL.", parent=d)
+                return
             copy_dir = vars_["backup_copy_dir"].get().strip()
             if copy_dir and os.path.normcase(os.path.abspath(copy_dir)) == os.path.normcase(
                     os.path.abspath(vars_["backup_root"].get().strip())):
@@ -8996,8 +9858,9 @@ class App:
                                      parent=d)
                 return
             for key in ("steamcmd_dir", "backup_root", "cluster_dir", "rcon_host", "curseforge_api_key",
-                        "discord_webhook", "discord_name", "backup_copy_dir", "battlemetrics_token"):
+                        "discord_webhook", "discord_name", "backup_copy_dir", "battlemetrics_token", "status_webhook"):
                 data[key] = vars_[key].get().strip()
+            data["status_board"], data["status_board_names"] = board_v.get(), names_v.get()
             data["curseforge_api_key"] = clean_api_key(data["curseforge_api_key"])
             data["backup_before_update"] = pre_upd.get()
             data["tamer_update_check"] = tamer_upd.get()
@@ -9010,6 +9873,7 @@ class App:
             size_changed = new_size != data.get("text_size", "large")
             data["text_size"] = new_size
             self.cfg.save()
+            self.mgr._board_checked, self.mgr._board_sig = 0, None  # show setting changes in the status message soon
             if size_changed:
                 set_text_scale(text_scale_of(self.cfg))
             self.apply_theme()  # also redoes row heights and the Mods tab circles for the new size
@@ -9288,6 +10152,11 @@ class App:
         self._save_window_geometry()
         for srv in self.cfg.servers:  # countdowns end with this window; the service re-plans schedules itself
             self.mgr.runtime(srv["id"]).cancel_event.set()
+        if self.cfg.data.get("status_board") and not has_service:  # nobody keeps it up to date from here on
+            t = threading.Thread(target=self.mgr.status_board_update, kwargs={"force": True, "closed": True},
+                                 daemon=True)
+            t.start()
+            t.join(6)
         self.mgr.stop_event.set()
         if self.tray:
             self.tray.remove()

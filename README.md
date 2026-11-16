@@ -19,8 +19,9 @@
 - **Backups** on a timer, with a second copy on another drive or the cloud.
 - **Game settings** form, **mod settings** editor and full INI editors, plus a **launch options** builder.
 - **AsaApi plugins:** install AsaApi and plugins in one click.
-- **An admin list**, so your admins have their powers as soon as they join, without `enablecheats`.
-- **Discord alerts**, timed in-game messages, a **troubleshooter** that reads the logs for you, connectivity checks, and performance graphs.
+- **An admin list** shared across your cluster (ASA often ignores it, so `enablecheats` may still be needed).
+- **Rate events**, such as 2x every weekend, that switch on and off at your scheduled restarts.
+- **Discord alerts** and a **live status message** in Discord, timed in-game messages, a **troubleshooter** that reads the logs for you, connectivity checks, and performance graphs.
 - **Runs in the background** (tray and Windows service), with light and dark themes, and **updates itself**.
 
 <p align="center"><img src="docs/screenshots/mods.png" width="49%" alt="Mods tab"> <img src="docs/screenshots/welcome_2.png" width="40%" alt="The first-run welcome"></p>
@@ -76,6 +77,8 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 1. Click **Add** (or **Clone**) for each map. Every server gets its own install folder and unique ports automatically.
 2. On each server, tick **Join the cluster**.
 3. The **File > Settings** menu holds the shared **Cluster ID** and **cluster data folder**. All cluster servers must use the same ones, and Tamer handles that for you.
+   - The cluster data folder is where ARK saves transfers between maps (uploaded characters, dinos and items). It must be a real folder, such as `C:\ARK Cluster`. Settings refuses one that can't work, and Tamer warns at every start (and in Discord) if it's wrong, because transfers would seem to work but never reach the other maps.
+   - **Test transfers after setting up a cluster:** upload a small item on one map and download it on another.
 4. To limit what can be transferred, use **Game > Cluster transfers**.
 
 ## Features
@@ -91,12 +94,19 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
 - **Game settings** (the **Game** tab): a form for common rates and rules (XP, taming, harvest, breeding, PvE, MOTD…) plus full raw editors for `GameUserSettings.ini` and `Game.ini`. Leave a form field blank to use ARK's default. Each save keeps a `.bak` copy.
   - **Mod settings** lists the mods' own sections in `GameUserSettings.ini` (such as `[StructuresPlus]`), with a best guess at which installed mod each one belongs to. Click a section to see its settings. Edit a value and press **Set**, or use **Add setting** / **Remove setting**. **Add section...** is for a mod that has no settings in the file yet; its CurseForge page lists the section name and settings. Only the sections you change are rewritten, and the three views (Common settings, Mod settings and the raw file) always agree.
   - Edit INI files while the server is **stopped**. ARK rewrites GameUserSettings.ini when it shuts down.
+  - **Read-only files:** some server managers, and some older guides, mark `GameUserSettings.ini` (and other files) read-only to stop ARK rewriting it. Tamer can't save to a read-only file, so the Game tab shows a yellow line naming them, with a **Make them writable** button, and **Save** asks before fixing them. You don't need read-only with Tamer. Starts, rate events and the admin list write the reason to the Log tab when a file is read-only, and **Troubleshoot** lists it too.
 - **RCON console**: send any admin command. It shows a live player list with kick, ban and copy-ID, a live in-game chat feed, broadcast, and wiping wild dinos.
-- **Admins** (Players tab): players on this list get admin powers as soon as they join, so they don't need `enablecheats` every time. Pick an online player and click **Make admin**, or use **Add by ID...** with their EOS ID (the 32-letter ID in the Online players list). **Remove** takes them off.
+- **Admins** (Players tab): ARK's admin list, meant to give these players admin powers as soon as they join, without `enablecheats`. Pick an online player and click **Make admin**, or use **Add by ID...** with their EOS ID (the 32-letter ID in the Online players list). **Remove** takes them off.
+  - **ASA often ignores this list.** On some servers ARK never reads it, even with the right ID in the right place, and the `AdminListURL` setting doesn't help either. If `cheat` commands are refused, use `enablecheats <admin password>` in the console, once per session. Tamer keeps writing the list in case a future ARK update starts reading it.
   - Cluster servers share one list, so a cluster admin is an admin on every map. A server outside the cluster has its own list.
   - Tamer writes the list to `ShooterGame\Saved\AllowedCheaterAccountIDs.txt` on each server, and again before every start. ARK reads it only when the server starts, so changes work after the next restart; Tamer tells you which running servers need one.
   - Admins already in that file (added by hand) are kept, shown as "(name unknown)" until they're seen online.
   - Everyone on the list has full admin powers. Only add people you trust.
+- **Rate events** (Schedule tab > **Rate events...**): change settings for a while, such as 2x taming and breeding every weekend, or 3x over a holiday.
+  - Each event has a name, a time (every week from one day and time to another, or once between two dates), the servers it's for, and the settings to change with their event values. Any setting from the Game tab's form can be used.
+  - Rates only change when a server starts or restarts, so an event begins at the first restart after its start time and ends at the first restart after its end time. The window shows when that is for each server, for example "switches at the restart on Sat 14 Nov 04:00, back to normal on Mon 16 Nov 04:00". A server with no daily restart times only switches when you restart it yourself.
+  - Tamer remembers your normal values and puts them back when the event is over. If you change one of those settings yourself during an event, your new value becomes the normal one.
+  - While an event is on, the header shows **EVENT: Weekend 2x** and the Schedule tab lists it as "(on now)".
 - **Backups**: automatic backups every N minutes while the server is online, plus manual backups and a retention limit. Backups include saves, player and tribe files, configs and (for cluster servers) cluster data. **Restore** moves the current saves aside instead of deleting them.
 - **Mods tab**: search CurseForge's ARK: Survival Ascended mods by name. You can sort by popularity, last update, downloads or name, and read each mod's details.
   - **Install** adds a mod to the selected server. **Install on cluster** adds it to every server in the cluster. Double-clicking a result also installs it.
@@ -119,6 +129,24 @@ The welcome does steps 1 and 2 for you the first time Tamer opens.
    - players joining and leaving (off by default; it can get chatty)
    - high-memory alerts
 4. Each server has a **Send Discord notifications** switch on its **Schedule** tab.
+
+### Live status message
+Turn on **Keep a live status message** (File > Settings > Discord) and Tamer keeps one message in Discord up to date, so anyone can see at a glance whether the servers are up:
+
+- 🟢 **Island PvE**: Online · 12/70 players · The Island · EVENT: Weekend 2x
+- 🔧 **Ragnarok PvP**: Updating 45% · Ragnarok
+- 🔴 **Scorched Earth**: Stopped · Scorched Earth
+
+Details:
+- **One message, edited in place:** Tamer checks every minute and only edits when something changes, plus every 10 minutes so the "Last checked" time (shown as "2 minutes ago") stays true. If someone deletes the message, Tamer posts a new one.
+- **Its own channel:** paste a second webhook under **Webhook (optional)** for a channel like #server-status, so alerts don't push the status out of view. Left blank, it uses the main webhook. **Post now** tries it straight away.
+- **Player names:** off by default. Tick **List online players' names** to show up to 10 per server.
+- **Hiding a server:** untick **Show this server in the Discord status message** on its Schedule tab.
+- **When Tamer closes:** the message changes to "Tamer is closed - status not updating". With the background service installed, the service keeps it updated instead.
+- Real commands such as `/status` need a Discord bot, which Tamer doesn't have.
+
+### Crash details
+Crash alerts include details, so you can see why from your phone: the likely cause with what to do (the same checks as **Troubleshoot**), ARK's own crash report from `ShooterGame\Saved\Crashes` when there is one, and the last lines of `ShooterGame.log`. Passwords, keys, webhook links and player IDs are removed first.
 
 ## Mod update auto-restart
 When a server comes online, Tamer records which version of each mod it loaded. Every 30 minutes by default (the interval is in Settings), it asks CurseForge whether any of those mods has a newer file.
