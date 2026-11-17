@@ -62,7 +62,7 @@ m.stop_event.set()
 
 # ---------- the rules on their own ----------
 calls = []
-def run_op(s_, label, fn, update, warns, target, reason):
+def run_op(s_, label, fn, update, warns, target, reason, when_empty=False):
     calls.append(warns); return True
 m.run_op = run_op
 def check(online, players, waited_min, **settings):

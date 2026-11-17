@@ -56,7 +56,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog, font as tkfont
 # --------------------------------------------------------------------------------------
 APP_NAME = "Tamer"
 APP_TAGLINE = "Tame your server"
-APP_VERSION = "1.24.0"
+APP_VERSION = "1.24.1"
 ASA_APP_ID = 2430930
 IS_WINDOWS = os.name == "nt"
 
@@ -1333,6 +1333,14 @@ def unquote(value: str) -> str:
     return v[1:-1] if len(v) >= 2 and v[0] == v[-1] == '"' else v
 
 
+def as_int(value, default=0) -> int:
+    """A whole number from a setting that may have been saved as text ("120", " 15 ", "2.0"); default if it isn't one."""
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def clean_path(value: str) -> str:
     """A folder path without the leftovers of other launch lines: quotes and escaped quotes around it, a slash
     before the drive letter and slashes at the end. \\"C:\\ARK Data\\" or \\C:\\ARK Data\\ -> C:\\ARK Data.
@@ -1617,6 +1625,11 @@ class AppConfig:
         for s in self.data.get("servers", []):
             merged = default_server(1, [])
             merged.update(s)
+            # before 1.24.1 the Schedule tab saved "Longest wait for an empty server" as text ("120"), and the
+            # mod-update wait then failed every few seconds and stopped Tamer's checks for every server
+            for key in INT_KEYS:
+                if isinstance(merged.get(key), str):
+                    merged[key] = as_int(merged[key], default_server(1, []).get(key, 0))
             servers.append(merged)
         self.data["servers"] = servers
         # a cluster folder imported from \"...\" quotes kept its backslashes and ARK couldn't save cluster uploads
@@ -2089,9 +2102,17 @@ class Manager:
 
         def work():
             try:
-                self.status_board_update()
+                err = self.status_board_update()
+            except Exception as e:  # never leave the status message switched off for good by one bad edit
+                err = f"{type(e).__name__}: {e}"
             finally:
                 self._board_busy = False
+            # say on the Log tab when it stops working and when it works again (not every minute)
+            if err != getattr(self, "_board_logged", ""):
+                self._board_logged = err
+                for s in self.cfg.servers[:1]:
+                    self.log(s, f"Discord status message couldn't be updated: {err}. Tamer keeps trying every minute."
+                             if err else "Discord status message is updating again.")
         threading.Thread(target=work, daemon=True, name="status-board").start()
 
     def alert(self, s, event, title, desc="", color="info"):
@@ -2428,26 +2449,46 @@ class Manager:
         if announce:
             self.alert(s, "status", "Stopped", "The server was shut down.", "muted")
 
-    def _countdown(self, s, target: dt.datetime, minutes: list[int], what: str) -> bool:
-        """Broadcast warnings until `target`. Returns False if cancelled."""
+    @staticmethod
+    def server_empty(rt) -> bool:
+        """Online, with a player list Tamer has actually read, and nobody on it."""
+        return bool(rt.online and rt.players_ready and not rt.players)
+
+    EMPTY_CHECK = 5  # seconds between looks at whether everyone has left, during an update countdown
+
+    def _countdown_wait(self, rt, seconds, stop_when_empty) -> str:
+        """Wait out part of a countdown. "cancel" if cancelled, "empty" if everyone left (when asked), else ""."""
+        end = time.time() + seconds
+        while True:
+            left = end - time.time()
+            if left <= 0:
+                return ""
+            if stop_when_empty and self.server_empty(rt):
+                return "empty"
+            if rt.cancel_event.wait(min(left, self.EMPTY_CHECK) if stop_when_empty else left):
+                return "cancel"
+
+    def _countdown(self, s, target: dt.datetime, minutes: list[int], what: str, stop_when_empty=False) -> bool:
+        """Broadcast warnings until `target`. Returns False if cancelled. stop_when_empty: finish early (True) as
+        soon as nobody is online, for update restarts; scheduled restarts keep their time."""
         rt = self.runtime(s["id"])
         rt.countdown_until = target
         try:
-            for m in sorted(minutes, reverse=True):
-                at = target - dt.timedelta(minutes=m)
-                wait = (at - dt.datetime.now()).total_seconds()
-                if wait > 0 and rt.cancel_event.wait(wait):
+            for m in sorted(minutes, reverse=True) + [None]:
+                at = target - dt.timedelta(minutes=m or 0)
+                got = self._countdown_wait(rt, (at - dt.datetime.now()).total_seconds(), stop_when_empty)
+                if got == "cancel":
                     self.log(s, f"{what} cancelled.")
-                    self.broadcast(s, f"The scheduled {what.lower()} has been cancelled.")
+                    if m is not None:
+                        self.broadcast(s, f"The scheduled {what.lower()} has been cancelled.")
                     return False
-                if (dt.datetime.now() - at).total_seconds() < 45:
+                if got == "empty":
+                    self.log(s, f"Everyone has left - doing the {what.lower()} now instead of waiting.")
+                    return True
+                if m is not None and (dt.datetime.now() - at).total_seconds() < 45:
                     self.log(s, f"Warning players: {what.lower()} in {m} minute(s)")
                     self.broadcast(s, f"Server {what.lower()} in {m} minute{'s' if m != 1 else ''}. "
                                       f"Please get somewhere safe.")
-            wait = (target - dt.datetime.now()).total_seconds()
-            if wait > 0 and rt.cancel_event.wait(wait):
-                self.log(s, f"{what} cancelled.")
-                return False
             return True
         finally:
             rt.countdown_until = None
@@ -2491,14 +2532,18 @@ class Manager:
                 return
         self._stop(s, graceful=True)
 
-    def op_restart(self, s, update=False, warn_minutes=None, target=None, reason="Restart"):
+    def op_restart(self, s, update=False, warn_minutes=None, target=None, reason="Restart", when_empty=False):
+        """when_empty (update restarts): nobody online means restart now, and everyone leaving ends the countdown."""
         rt = self.runtime(s["id"])
         try:
+            if when_empty and warn_minutes and not target and self.server_empty(rt):
+                self.log(s, f"{reason}: nobody is online, so restarting now.")
+                warn_minutes = None
             if warn_minutes and (rt.online or target):  # a scheduled time still gets warnings once players can join
                 target = target or dt.datetime.now() + dt.timedelta(minutes=max(warn_minutes))
                 self.log(s, f"{reason}: restarting at {target:%H:%M}.")
                 self.alert(s, "restart", f"Restarting at {target:%H:%M}", f"Reason: {reason}", "warn")
-                if not self._countdown(s, target, warn_minutes, "Restart"):
+                if not self._countdown(s, target, warn_minutes, "Restart", stop_when_empty=when_empty):
                     self.alert(s, "restart", "Restart cancelled", "", "muted")
                     return
             elif target:
@@ -3091,12 +3136,15 @@ class Manager:
 
     def _monitor(self):
         while not self.stop_event.is_set():
-            try:
-                if not self.paused:
-                    self._tick()
-                    self._status_board_tick()
-            except Exception:
-                traceback.print_exc()
+            if not self.paused:
+                # separate safety nets: an error in the regular check must not also stop the status message
+                for step in (self._tick, self._status_board_tick):
+                    try:
+                        step()
+                    except Exception as e:
+                        traceback.print_exc()
+                        if self.cfg.servers:
+                            self._check_failed(self.cfg.servers[0], e)
             self.notify("state", None, None)
             self.stop_event.wait(5)
 
@@ -3163,81 +3211,10 @@ class Manager:
                     self.run_op(s, "Start", self.op_start)
 
         for s in list(self.cfg.servers):
-            rt = self.runtime(s["id"])
-            running = self.is_running(s)
-            if running:
-                if not rt.polling and now - rt.last_poll >= 10:
-                    rt.last_poll, rt.polling = now, True
-                    threading.Thread(target=self._poll, args=(s,), daemon=True).start()
-                if not rt.online and rt.start_time and now - rt.start_time > 1200 and not rt.warned_not_online:
-                    rt.warned_not_online = True
-                    self.log(s, "Server has been starting for 20+ minutes without RCON responding - troubleshooting...")
-                    threading.Thread(target=self.auto_diagnose, args=(s, "Stuck starting for 20+ minutes"),
-                                     daemon=True).start()
-            elif rt.proc is not None or rt.pid is not None:
-                code = rt.proc.poll() if rt.proc is not None else None
-                rt.proc = rt.pid = None
-                rt.online, rt.players = False, []
-                in_countdown = rt.busy and rt.countdown_until is not None
-                if rt.want_running and not rt.online_since_start and not rt.busy:
-                    threading.Thread(target=self.auto_diagnose, args=(s, "Crashed before it finished starting"),
-                                     daemon=True).start()
-                if rt.want_running and (not rt.busy or in_countdown):
-                    if in_countdown:  # crashed while waiting to restart: don't sit out the countdown
-                        rt.cancel_event.set()
-                    self.log(s, f"Server process exited unexpectedly (exit code {code}).")
-                    rt.crash_times.append(now)
-                    recent = [t for t in rt.crash_times if now - t < 1800]
-                    rt.announced_online = False
-                    started = rt.start_time
-                    if not s.get("auto_restart_on_crash"):
-                        rt.want_running = False
-                        self._crash_alert(s, "Crashed", f"Exit code {code}. Auto-restart is off for this server.", started)
-                    elif len(recent) >= 5:
-                        rt.want_running = False
-                        self.log(s, "Crashed 5 times in 30 minutes - auto-restart paused. Check ShooterGame.log.")
-                        self._crash_alert(s, "Crashed repeatedly - auto-restart paused",
-                                          "5 crashes in 30 minutes. Check ShooterGame.log on the host.", started)
-                    else:
-                        self.log(s, "Auto-restarting after crash...")
-                        self._crash_alert(s, "Crashed - restarting", f"Exit code {code}. Restarting automatically.", started)
-                        threading.Thread(target=self._crash_restart_when_free, args=(s,), daemon=True).start()
-
-            self._sample_resources(s, rt, running, now)
-            self._log_window(s, rt, running)
-            if running and rt.online and not rt.busy:
-                self._run_due_tasks(s, rt, now)
-            if running and rt.mod_wait_since is not None:
-                self._mod_wait_check(s, rt)
-
-            if rt.busy:
-                rt.state = rt.busy
-            elif running:
-                rt.state = "Online" if rt.online else "Starting"
-            else:
-                rt.state = ("Queued to start" if rt.queued else "Stopped") if self.is_installed(s) else "Not installed"
-
-            # scheduled restarts
-            if running and rt.restart_target is None and not rt.busy and s.get("restart_times", "").strip():
-                try:
-                    times = parse_times(s["restart_times"])
-                    warns = parse_minutes(s.get("restart_warn_minutes", "")) or []
-                except ValueError:
-                    times, warns = [], []
-                if times:
-                    nxt = next_occurrence(times, dt.datetime.now())
-                    lead = (max(warns) if warns else 0) * 60 + 10
-                    if (nxt - dt.datetime.now()).total_seconds() <= lead:
-                        rt.restart_target = nxt
-                        if not self.run_op(s, "Scheduled restart", self.op_restart,
-                                           bool(s.get("update_on_scheduled_restart")), warns, nxt,
-                                           "Scheduled restart"):
-                            rt.restart_target = None
-
-            # automatic backups
-            interval = int(s.get("backup_interval_min") or 0)
-            if interval > 0 and running and rt.online and not rt.busy and now - rt.last_backup >= interval * 60:
-                self.run_op(s, "Backup", self.op_backup, "auto")
+            try:  # one server's problem must never stop the checks (backups, restarts, crash watch) for the rest
+                self._tick_server(s, now)
+            except Exception as e:
+                self._check_failed(s, e)
 
         # machine memory
         self.sys_mem = system_memory()
@@ -3258,6 +3235,99 @@ class Manager:
         if check_min > 0 and now - self.last_update_check >= check_min * 60:
             self.last_update_check = now
             threading.Thread(target=self.check_updates, daemon=True).start()
+
+    def _tick_server(self, s, now):
+        """The regular check for one server: crash watch, state, tasks, scheduled restarts and backups."""
+        rt = self.runtime(s["id"])
+        running = self.is_running(s)
+        if running:
+            if not rt.polling and now - rt.last_poll >= 10:
+                rt.last_poll, rt.polling = now, True
+                threading.Thread(target=self._poll, args=(s,), daemon=True).start()
+            if not rt.online and rt.start_time and now - rt.start_time > 1200 and not rt.warned_not_online:
+                rt.warned_not_online = True
+                self.log(s, "Server has been starting for 20+ minutes without RCON responding - troubleshooting...")
+                threading.Thread(target=self.auto_diagnose, args=(s, "Stuck starting for 20+ minutes"),
+                                 daemon=True).start()
+        elif rt.proc is not None or rt.pid is not None:
+            code = rt.proc.poll() if rt.proc is not None else None
+            rt.proc = rt.pid = None
+            rt.online, rt.players = False, []
+            in_countdown = rt.busy and rt.countdown_until is not None
+            if rt.want_running and not rt.online_since_start and not rt.busy:
+                threading.Thread(target=self.auto_diagnose, args=(s, "Crashed before it finished starting"),
+                                 daemon=True).start()
+            if rt.want_running and (not rt.busy or in_countdown):
+                if in_countdown:  # crashed while waiting to restart: don't sit out the countdown
+                    rt.cancel_event.set()
+                self.log(s, f"Server process exited unexpectedly (exit code {code}).")
+                rt.crash_times.append(now)
+                recent = [t for t in rt.crash_times if now - t < 1800]
+                rt.announced_online = False
+                started = rt.start_time
+                if not s.get("auto_restart_on_crash"):
+                    rt.want_running = False
+                    self._crash_alert(s, "Crashed", f"Exit code {code}. Auto-restart is off for this server.", started)
+                elif len(recent) >= 5:
+                    rt.want_running = False
+                    self.log(s, "Crashed 5 times in 30 minutes - auto-restart paused. Check ShooterGame.log.")
+                    self._crash_alert(s, "Crashed repeatedly - auto-restart paused",
+                                      "5 crashes in 30 minutes. Check ShooterGame.log on the host.", started)
+                else:
+                    self.log(s, "Auto-restarting after crash...")
+                    self._crash_alert(s, "Crashed - restarting", f"Exit code {code}. Restarting automatically.", started)
+                    threading.Thread(target=self._crash_restart_when_free, args=(s,), daemon=True).start()
+
+        self._sample_resources(s, rt, running, now)
+        self._log_window(s, rt, running)
+        if running and rt.online and not rt.busy:
+            self._run_due_tasks(s, rt, now)
+        if running and rt.mod_wait_since is not None:
+            self._mod_wait_check(s, rt)
+
+        if rt.busy:
+            rt.state = rt.busy
+        elif running:
+            rt.state = "Online" if rt.online else "Starting"
+        else:
+            rt.state = ("Queued to start" if rt.queued else "Stopped") if self.is_installed(s) else "Not installed"
+
+        # scheduled restarts
+        if running and rt.restart_target is None and not rt.busy and s.get("restart_times", "").strip():
+            try:
+                times = parse_times(s["restart_times"])
+                warns = parse_minutes(s.get("restart_warn_minutes", "")) or []
+            except ValueError:
+                times, warns = [], []
+            if times:
+                nxt = next_occurrence(times, dt.datetime.now())
+                lead = (max(warns) if warns else 0) * 60 + 10
+                if (nxt - dt.datetime.now()).total_seconds() <= lead:
+                    rt.restart_target = nxt
+                    if not self.run_op(s, "Scheduled restart", self.op_restart,
+                                       bool(s.get("update_on_scheduled_restart")), warns, nxt,
+                                       "Scheduled restart"):
+                        rt.restart_target = None
+
+        # automatic backups
+        interval = int(s.get("backup_interval_min") or 0)
+        if interval > 0 and running and rt.online and not rt.busy and now - rt.last_backup >= interval * 60:
+            self.run_op(s, "Backup", self.op_backup, "auto")
+        if getattr(rt, "check_error", ""):
+            rt.check_error = ""
+            self.log(s, "Tamer's regular checks for this server are working again.")
+
+    def _check_failed(self, s, e):
+        """A server's regular check hit an error: say so on its Log tab (once per different error) and carry on."""
+        rt = self.runtime(s["id"])
+        err = f"{type(e).__name__}: {e}"
+        if getattr(rt, "check_error", "") == err:
+            return
+        rt.check_error = err
+        where = traceback.extract_tb(e.__traceback__)[-1]
+        self.log(s, f"Tamer hit an error checking this server ({err}, in {where.name} line {where.lineno}). "
+                    "Backups, restarts and crash checks for it may not run until this is fixed; the other servers "
+                    "carry on. Please send a bug report (Help > Send a bug report).")
 
     # ---- timed messages & commands -------------------------------------------------
     def _run_due_tasks(self, s, rt, now):
@@ -3408,7 +3478,7 @@ class Manager:
             except ValueError:
                 pass
         rt.restart_target = dt.datetime.now()
-        if not self.run_op(s, "Mod update restart", self.op_restart, False, warns, None, f"Mod update: {names}"):
+        if not self.run_op(s, "Mod update restart", self.op_restart, False, warns, None, f"Mod update: {names}", True):
             rt.restart_target = None
             return False
         self.alert(s, "update", "Mod update - restarting", names, "info")
@@ -3423,8 +3493,8 @@ class Manager:
             return False
         # rt.online goes False when a player check fails, so an unanswered check never counts as empty
         empty = rt.online and not rt.players
-        limit = s.get("mod_restart_wait_minutes", 120)
-        too_long = bool(limit) and time.time() - rt.mod_wait_since >= limit * 60
+        limit = as_int(s.get("mod_restart_wait_minutes", 120), 120)
+        too_long = limit > 0 and time.time() - rt.mod_wait_since >= limit * 60
         if not (empty or too_long or not s.get("mod_restart_wait_empty")):
             return False
         if not self._mod_update_restart(s, rt, rt.mod_wait_names, not empty):
@@ -3542,7 +3612,7 @@ class Manager:
                     pass
                 self.log(s, f"Game update available (build {self.latest_build}) - restarting to update.")
                 rt.restart_target = dt.datetime.now()
-                if not self.run_op(s, "Update restart", self.op_restart, True, warns, None, "Game update"):
+                if not self.run_op(s, "Update restart", self.op_restart, True, warns, None, "Game update", True):
                     rt.restart_target = None
         if manual:
             self.notify("info", None, f"Latest ARK: Survival Ascended server build: {self.latest_build}")
@@ -5497,7 +5567,7 @@ SCHEDULE_FIELDS = [
     ("Notifications", "status_board", "Show this server in the Discord status message", "bool",
      "When the live status message is on (File > Settings > Discord)"),
 ]
-INT_KEYS = {"port", "rcon_port", "max_players", "backup_interval_min", "backup_keep"}
+INT_KEYS = {"port", "rcon_port", "max_players", "backup_interval_min", "backup_keep", "mod_restart_wait_minutes"}
 FLOAT_KEYS = {"ram_restart_gb"}
 
 
